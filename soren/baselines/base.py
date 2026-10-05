@@ -23,6 +23,8 @@ import numpy as np
 from soren.data.schema import GraphRecord
 from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig
 from soren.env.rewards import RewardConfig
+from soren.env.wrappers import TraceRecorder
+from soren.viz.trace import INSPECT, Trace, TraceStep
 
 
 @dataclass
@@ -75,8 +77,34 @@ class EnvSearcher:
         raise NotImplementedError
 
     def run(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> EpisodeResult:
-        env = CFGNavEnv([graph], self.env_config, self.reward_config)
-        _, info = env.reset(options={"graph_index": 0, "max_steps": max_steps})
+        return self._episode(graph, max_steps, rng, None)
+
+    def trace(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> Trace:
+        """Run one episode and return it as a replayable trace."""
+        recorder = TraceRecorder(CFGNavEnv([graph], self.env_config, self.reward_config), self.name)
+        result = self._episode(graph, max_steps, rng, recorder)
+        trace = recorder.trace
+        assert trace is not None
+        # Covers the case where the search ran out of nodes before the episode ended.
+        trace.outcome = {
+            "success": result.success,
+            "declared_node": result.declared_node,
+            "return": result.cumulative_reward,
+            "end_reason": result.end_reason,
+            "nodes_inspected": result.nodes_inspected,
+        }
+        return trace
+
+    def _episode(
+        self,
+        graph: GraphRecord,
+        max_steps: int,
+        rng: np.random.Generator,
+        recorder: TraceRecorder | None,
+    ) -> EpisodeResult:
+        env = recorder.core if recorder else CFGNavEnv([graph], self.env_config, self.reward_config)
+        stepper = recorder or env
+        _, info = stepper.reset(options={"graph_index": 0, "max_steps": max_steps})
         visit_order = [info["current_node"]]
         seen = set(visit_order)
         done = False
@@ -89,7 +117,7 @@ class EnvSearcher:
                 if action is None:
                     exhausted = True
                     break
-            *_, terminated, truncated, info = env.step(action)
+            *_, terminated, truncated, info = stepper.step(action)
             done = terminated or truncated
             if info["current_node"] not in seen:
                 seen.add(info["current_node"])
@@ -176,4 +204,32 @@ class OrderSearcher:
             first_hit_step=first_hit_step,
             end_reason=end_reason,
             visit_order=visit_order,
+        )
+
+    def trace(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> Trace:
+        """Run one search and return it as a replayable trace of ``INSPECT`` jumps."""
+        result = self.run(graph, max_steps, rng)
+        cfg = self.reward_config
+        order = result.visit_order
+        steps = [
+            TraceStep(t=i, node=order[i], action=INSPECT, next_node=order[i + 1], reward=cfg.step)
+            for i in range(len(order) - 1)
+        ]
+        if result.success:
+            node = order[-1]
+            steps.append(TraceStep(len(steps), node, "DECLARE", node, cfg.correct))
+        elif steps:
+            steps[-1].reward += cfg.timeout
+        return Trace(
+            graph_id=graph.sample_id,
+            method=self.name,
+            start_node=order[0],
+            steps=steps,
+            outcome={
+                "success": result.success,
+                "declared_node": result.declared_node,
+                "return": result.cumulative_reward,
+                "end_reason": result.end_reason,
+                "nodes_inspected": result.nodes_inspected,
+            },
         )
