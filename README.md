@@ -38,13 +38,22 @@ git-ignored):
 - The preprocessed CSVs from [LineVul](https://github.com/awsm-research/LineVul), which
   already carry `flaw_line` and `flaw_line_index`.
 
-`soren.data.bigvul.load_bigvul` accepts either and maps it to one set of canonical columns.
-It stops with an error naming the column if a file lacks something it needs.
+- The [`bstee615/bigvul`](https://huggingface.co/datasets/bstee615/bigvul) mirror on Hugging
+  Face: three Parquet files (252 MB) with the original column names. Put them in
+  `data/raw/bigvul_hf/`. This is what the results in this repository use.
+
+`soren.data.bigvul.load_bigvul` accepts any of these, including a directory of Parquet files,
+and maps it to one set of canonical columns. It stops with an error naming the column if a
+file lacks something it needs.
+
+**CWEs.** The project uses CWE-119 and CWE-125, which leave 1,578 usable functions after
+filtering (1,251 and 327). The numbers behind that choice are in
+[`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb).
 
 ### Preparing the data
 
 ```bash
-python scripts/01_filter_bigvul.py --input data/raw/MSR_data_cleaned.csv
+python scripts/01_filter_bigvul.py --input data/raw/bigvul_hf
 python scripts/02_write_sources.py
 ```
 
