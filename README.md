@@ -1,5 +1,7 @@
 # Soren
 
+[![CI](https://github.com/puang59/Soren/actions/workflows/ci.yml/badge.svg)](https://github.com/puang59/Soren/actions/workflows/ci.yml)
+
 A reinforcement learning agent for source-level vulnerability localization. Instead of
 classifying a whole function in one pass, Soren learns to walk a function's control flow
 graph and declare the statement responsible for a vulnerability.
