@@ -1,9 +1,13 @@
 """Common interface for traversal baselines.
 
 BFS, DFS and a random walk define an order in which nodes are visited. They have no rule for
-declaring a node vulnerable, so here they run under **Protocol A** (oracle stop): the search
-succeeds the moment it first visits a vulnerable node. This favours the baselines, since the
-learned agent must both reach the node and choose to declare it.
+declaring a node vulnerable, so by default they run under **Protocol A** (oracle stop): the
+search succeeds the moment it first visits a vulnerable node. This favours the baselines,
+since the learned agent must both reach the node and choose to declare it.
+
+Passing a ``declare_rule`` replaces the oracle stop. **Protocol B** uses a rule that declares
+at the first node whose score passes a threshold (see ``soren.baselines.heuristic``), so a
+baseline can be wrong, like the agent.
 
 Two step counts are reported:
 
@@ -15,6 +19,7 @@ Two step counts are reported:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -25,6 +30,14 @@ from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig
 from soren.env.rewards import RewardConfig
 from soren.env.wrappers import TraceRecorder
 from soren.viz.trace import INSPECT, Trace, TraceStep
+
+DeclareRule = Callable[[GraphRecord, int], bool]
+"""Decides, on arriving at a node, whether to declare it vulnerable."""
+
+
+def oracle_stop(graph: GraphRecord, node: int) -> bool:
+    """Protocol A: declare exactly when standing on a vulnerable node."""
+    return node in graph.vuln_set
 
 
 @dataclass
@@ -67,10 +80,17 @@ class EnvSearcher:
     stochastic = False
 
     def __init__(
-        self, env_config: EnvConfig | None = None, reward_config: RewardConfig | None = None
+        self,
+        env_config: EnvConfig | None = None,
+        reward_config: RewardConfig | None = None,
+        declare_rule: DeclareRule | None = None,
+        name: str | None = None,
     ) -> None:
         self.env_config = env_config or EnvConfig()
         self.reward_config = reward_config or RewardConfig()
+        self.declare_rule = declare_rule or oracle_stop
+        if name is not None:
+            self.name = name
 
     def choose(self, env: CFGNavEnv, rng: np.random.Generator) -> int | None:
         """Return a movement action, or ``None`` when the search space is exhausted."""
@@ -85,7 +105,10 @@ class EnvSearcher:
         result = self._episode(graph, max_steps, rng, recorder)
         trace = recorder.trace
         assert trace is not None
-        # Covers the case where the search ran out of nodes before the episode ended.
+        # Covers the case where the search ran out of nodes before the episode ended; the
+        # penalty for that is charged to the last step, as a timeout would be.
+        if result.end_reason == "exhausted" and trace.steps:
+            trace.steps[-1].reward += self.reward_config.timeout
         trace.outcome = {
             "success": result.success,
             "declared_node": result.declared_node,
@@ -110,7 +133,7 @@ class EnvSearcher:
         done = False
         exhausted = False
         while not done:
-            if env.node in graph.vuln_set:
+            if self.declare_rule(graph, env.node) and env.action_masks()[env.declare_action]:
                 action = env.declare_action
             else:
                 action = self.choose(env, rng)
@@ -157,8 +180,16 @@ class OrderSearcher:
     name = "order_searcher"
     stochastic = False
 
-    def __init__(self, reward_config: RewardConfig | None = None) -> None:
+    def __init__(
+        self,
+        reward_config: RewardConfig | None = None,
+        declare_rule: DeclareRule | None = None,
+        name: str | None = None,
+    ) -> None:
         self.reward_config = reward_config or RewardConfig()
+        self.declare_rule = declare_rule or oracle_stop
+        if name is not None:
+            self.name = name
 
     def order(self, graph: GraphRecord, rng: np.random.Generator) -> list[int]:
         """Nodes in the order they are inspected."""
@@ -169,7 +200,8 @@ class OrderSearcher:
         visit_order: list[int] = []
         steps = 0
         reward = 0.0
-        hit: int | None = None
+        declared: int | None = None
+        first_hit_step: int | None = None
         end_reason = "exhausted"
 
         for position, node in enumerate(self.order(graph, rng)):
@@ -180,27 +212,29 @@ class OrderSearcher:
                 if steps >= max_steps:
                     end_reason = "timeout"
                     break
-            if node in graph.vuln_set:
-                hit = node
+            if first_hit_step is None and node in graph.vuln_set:
+                first_hit_step = steps
+            declarable = graph.nodes[node].kind not in ("ENTRY", "EXIT")
+            if declarable and self.declare_rule(graph, node):
+                declared = node
                 break
 
-        first_hit_step = None
-        if hit is not None:
-            first_hit_step = steps
+        success = declared is not None and declared in graph.vuln_set
+        if declared is not None:
             steps += 1  # the declaration
-            reward += cfg.correct
-            end_reason = "correct"
+            reward += cfg.correct if success else cfg.wrong
+            end_reason = "correct" if success else "wrong_declare"
         else:
             reward += cfg.timeout
         return EpisodeResult(
             method=self.name,
             graph_id=graph.sample_id,
-            success=hit is not None,
+            success=success,
             nodes_inspected=len(visit_order),
             actions_taken=steps,
             cumulative_reward=reward,
-            declared_node=hit,
-            first_declared_node=hit,
+            declared_node=declared,
+            first_declared_node=declared,
             first_hit_step=first_hit_step,
             end_reason=end_reason,
             visit_order=visit_order,
@@ -215,9 +249,10 @@ class OrderSearcher:
             TraceStep(t=i, node=order[i], action=INSPECT, next_node=order[i + 1], reward=cfg.step)
             for i in range(len(order) - 1)
         ]
-        if result.success:
+        if result.declared_node is not None:
             node = order[-1]
-            steps.append(TraceStep(len(steps), node, "DECLARE", node, cfg.correct))
+            reward = cfg.correct if result.success else cfg.wrong
+            steps.append(TraceStep(len(steps), node, "DECLARE", node, reward))
         elif steps:
             steps[-1].reward += cfg.timeout
         return Trace(
