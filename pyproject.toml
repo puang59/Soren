@@ -30,6 +30,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+notebook = [
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "ipykernel>=6.29",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["soren"]
@@ -41,6 +46,9 @@ extend-exclude = ["plan"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"notebooks/*.ipynb" = ["E501", "E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
