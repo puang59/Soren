@@ -50,7 +50,7 @@ class EnvConfig:
     """Step budget is ``min(max_steps_cap, max_steps_per_node * |V|)``."""
     max_declares: int = 1
     """Declarations allowed per episode; the episode ends when a wrong one uses the last."""
-    feature_tier: str = "S"
+    feature_tier: str = "L"
     allow_backtrack: bool = True
     strict_masks: bool = True
     """Raise on masked actions. When off, a masked action is a wasted step instead."""

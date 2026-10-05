@@ -12,6 +12,7 @@ from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig, InvalidActionError
 from soren.env.rewards import RewardConfig
 
 K = EnvConfig().k
+TIER = EnvConfig().feature_tier
 BACKTRACK, DECLARE = K, K + 1
 
 
@@ -31,7 +32,7 @@ def test_check_env_passes():
 
 def test_spaces():
     env = make_env([diamond_graph()])
-    f = feature_dim("S")
+    f = feature_dim(TIER)
     assert env.action_space.n == K + 2
     assert env.observation_space.shape == (f + 2 + K * (f + 3) + 2 + len(NODE_KINDS) + 5,)
     assert env.action_name(0) == "MOVE_0"
@@ -170,7 +171,7 @@ def test_declare_budget_allows_further_attempts():
     obs, _, terminated, _, _ = env.step(DECLARE)
     assert not terminated
     assert DECLARE not in env.valid_actions()  # cannot declare the same node twice
-    assert obs[feature_dim("S") + 1] == 1.0  # declared-here flag
+    assert obs[feature_dim(TIER) + 1] == 1.0  # declared-here flag
     assert obs[-1] == pytest.approx(2 / 3)  # declares remaining
     env.step(1)
     _, _, terminated, _, info = env.step(DECLARE)
@@ -250,7 +251,7 @@ def test_info_keys():
 
 def test_successor_slots_describe_the_successors():
     env = make_env([loop_graph()])
-    f = feature_dim("S")
+    f = feature_dim(TIER)
     slot = f + 3
     start(env)
     env.step(0)  # at the loop header: successors are node 2 (body) and node 4 (return)
