@@ -7,11 +7,14 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
+import torch
 
 from soren.baselines.base import EpisodeResult
 from soren.data.schema import GraphRecord
 from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig
 from soren.env.rewards import RewardConfig
+from soren.env.wrappers import TraceRecorder
+from soren.viz.trace import Trace
 
 
 def evaluate_policy(
@@ -67,6 +70,41 @@ def evaluate_policy(
     return results
 
 
+def record_policy_trace(
+    model: Any,
+    graph: GraphRecord,
+    env_config: EnvConfig | None = None,
+    reward_config: RewardConfig | None = None,
+    deterministic: bool = True,
+    name: str = "ppo",
+    max_steps: int | None = None,
+) -> Trace:
+    """Run the policy on one graph and return the episode as a trace.
+
+    Each step carries the policy's masked action probabilities and its value estimate.
+    """
+    reward_config = replace(reward_config or RewardConfig(), shaping=False)
+    recorder = TraceRecorder(CFGNavEnv([graph], env_config, reward_config), method=name)
+    options: dict[str, Any] = {"graph_index": 0}
+    if max_steps is not None:
+        options["max_steps"] = max_steps
+    obs, _ = recorder.reset(options=options)
+    done = False
+    while not done:
+        mask = recorder.action_masks()
+        with torch.no_grad():
+            obs_tensor, _ = model.policy.obs_to_tensor(obs)
+            distribution = model.policy.get_distribution(obs_tensor, action_masks=mask[None])
+            probs = distribution.distribution.probs[0].cpu().numpy()
+            value = float(model.policy.predict_values(obs_tensor).item())
+        recorder.annotate(probs, value)
+        action, _ = model.predict(obs, action_masks=mask, deterministic=deterministic)
+        obs, _, terminated, truncated, _ = recorder.step(int(action))
+        done = terminated or truncated
+    assert recorder.trace is not None
+    return recorder.trace
+
+
 class PolicySearcher:
     """Adapter that makes a trained policy usable wherever a baseline ``Searcher`` is."""
 
@@ -95,3 +133,14 @@ class PolicySearcher:
             self.name,
             max_steps,
         )[0]
+
+    def trace(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> Trace:
+        return record_policy_trace(
+            self.model,
+            graph,
+            self.env_config,
+            self.reward_config,
+            self.deterministic,
+            self.name,
+            max_steps,
+        )
