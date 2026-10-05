@@ -13,6 +13,7 @@ dependencies = [
     "stable-baselines3==2.9.0",
     "sb3-contrib==2.9.0",
     "torch>=2.3",
+    "tensorboard>=2.15",
     "networkx>=3.2",
     "numpy>=1.26",
     "pandas>=2.2",

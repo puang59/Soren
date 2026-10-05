@@ -27,6 +27,23 @@ pytest                 # full suite
 pytest -m "not slow"   # fast suite, as run in CI
 ```
 
+## Training
+
+Train a masked PPO agent on any JSONL file of graph records. Synthetic graphs are enough to
+try the pipeline:
+
+```bash
+python -m soren.data.synthetic --out data/synthetic/train.jsonl --n 2000 --seed 0
+python -m soren.data.synthetic --out data/synthetic/val.jsonl --n 300 --seed 1
+python scripts/train.py --train data/synthetic/train.jsonl --val data/synthetic/val.jsonl \
+    --name synthetic-demo --timesteps 200000
+tensorboard --logdir runs/synthetic-demo/tb
+```
+
+Each run writes its resolved configuration, the best and final checkpoints, the validation
+history and TensorBoard logs to `runs/<name>/`. Hyperparameters live in `configs/ppo.yaml`,
+environment and reward settings in `configs/env.yaml`.
+
 ## Layout
 
 | Path | Contents |
