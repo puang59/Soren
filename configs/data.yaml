@@ -7,3 +7,18 @@ split:
   val: 0.1
   test: 0.1
   seed: 0
+
+# API name lists behind the Tier L call flags (plan section 9.2).
+lexicon:
+  dangerous_calls: [
+    memcpy, memmove, memset, strcpy, strncpy, strcat, strncat, sprintf, snprintf,
+    vsprintf, vsnprintf, gets, fgets, scanf, sscanf, read, recv, recvfrom, fread,
+    copy_from_user, copy_to_user, alloca, bcopy,
+  ]
+  alloc_calls: [
+    malloc, calloc, realloc, kmalloc, kzalloc, kcalloc, krealloc, vmalloc, vzalloc,
+    kvmalloc, av_malloc, g_malloc, new,
+  ]
+  free_calls: [
+    free, kfree, vfree, kvfree, av_free, g_free, delete,
+  ]
