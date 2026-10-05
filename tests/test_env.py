@@ -9,6 +9,7 @@ from soren.data.features import feature_dim
 from soren.data.schema import NODE_KINDS, GraphRecord, Node
 from soren.data.synthetic import SyntheticConfig, generate_dataset
 from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig, InvalidActionError
+from soren.env.rewards import RewardConfig
 
 K = EnvConfig().k
 BACKTRACK, DECLARE = K, K + 1
@@ -322,3 +323,4 @@ def test_default_config_file_matches_the_dataclass_defaults():
 
     path = Path(__file__).parent.parent / "configs" / "env.yaml"
     assert load_config(EnvConfig, path, section="env") == EnvConfig()
+    assert load_config(RewardConfig, path, section="reward") == RewardConfig()
