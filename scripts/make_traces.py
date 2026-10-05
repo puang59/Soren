@@ -18,26 +18,18 @@ import numpy as np
 
 from soren.agents.searcher import PolicySearcher
 from soren.agents.train import load_model
-from soren.baselines import BFS, DFS, LineOrder, RandomOrder, RandomWalk
+from soren.baselines.heuristic import BASELINE_FACTORIES, make_baseline
 from soren.config import load_config
 from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
-
-BASELINES = {
-    "dfs": lambda env, reward: DFS(env, reward),
-    "random_walk": lambda env, reward: RandomWalk(env, reward),
-    "bfs": lambda env, reward: BFS(reward),
-    "random_order": lambda env, reward: RandomOrder(reward),
-    "line_order": lambda env, reward: LineOrder(reward),
-}
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--graphs", required=True, help="graph records (JSONL)")
     parser.add_argument("--out", required=True, help="output directory")
-    parser.add_argument("--methods", nargs="*", default=[], choices=sorted(BASELINES))
+    parser.add_argument("--methods", nargs="*", default=[], choices=sorted(BASELINE_FACTORIES))
     parser.add_argument("--checkpoints", nargs="*", default=[], help="trained models to trace")
     parser.add_argument("--limit", type=int, help="trace only the first N graphs")
     parser.add_argument("--seed", type=int, default=0)
@@ -48,7 +40,7 @@ def main(argv: list[str] | None = None) -> None:
 
     env_config = load_config(EnvConfig, args.env_config, section="env")
     reward_config = load_config(RewardConfig, args.env_config, section="reward")
-    searchers = [BASELINES[name](env_config, reward_config) for name in args.methods]
+    searchers = [make_baseline(name, env_config, reward_config) for name in args.methods]
     for index, path in enumerate(args.checkpoints):
         name = "ppo" if len(args.checkpoints) == 1 else f"ppo_{index}"
         searchers.append(PolicySearcher(load_model(path), env_config, reward_config, name=name))

@@ -18,21 +18,13 @@ from dataclasses import replace
 
 from soren.agents.searcher import PolicySearcher
 from soren.agents.train import load_model
-from soren.baselines import BFS, DFS, LineOrder, RandomOrder, RandomWalk
-from soren.config import load_config
+from soren.baselines.heuristic import BASELINE_FACTORIES, HeuristicScorer, make_baseline
+from soren.config import load_config, load_yaml
 from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
 from soren.eval.metrics import breakdown, compute_metrics
 from soren.eval.runner import run_evaluation, save_results
-
-BASELINES = {
-    "dfs": lambda env, reward: DFS(env, reward),
-    "random_walk": lambda env, reward: RandomWalk(env, reward),
-    "bfs": lambda env, reward: BFS(reward),
-    "random_order": lambda env, reward: RandomOrder(reward),
-    "line_order": lambda env, reward: LineOrder(reward),
-}
 
 
 def checkpoint_seed(path: str, fallback: int) -> int:
@@ -46,13 +38,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--graphs", required=True, help="graph records (JSONL)")
     parser.add_argument("--split", required=True, choices=["train", "val", "test"])
     parser.add_argument("--out", required=True, help="per-episode results (Parquet)")
-    parser.add_argument("--methods", nargs="*", default=[], choices=sorted(BASELINES))
+    parser.add_argument("--methods", nargs="*", default=[], choices=sorted(BASELINE_FACTORIES))
     parser.add_argument("--checkpoints", nargs="*", default=[], help="trained models to evaluate")
     parser.add_argument("--policy-name", default="ppo", help="method name for the checkpoints")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--env-config", default="configs/env.yaml")
     parser.add_argument("--max-declares", type=int, help="override the declare budget (Top-k)")
     parser.add_argument("--breakdown", nargs="*", default=[], help="extra tables, e.g. size_bucket")
+    parser.add_argument(
+        "--protocol-b",
+        action="store_true",
+        help="also run each baseline with the heuristic threshold stop (Protocol B)",
+    )
+    parser.add_argument(
+        "--eval-config", default="configs/eval.yaml", help="holds the Protocol B thresholds"
+    )
     parser.add_argument(
         "--allow-test",
         action="store_true",
@@ -67,7 +67,20 @@ def main(argv: list[str] | None = None) -> None:
         env_config = replace(env_config, max_declares=args.max_declares)
     reward_config = load_config(RewardConfig, args.env_config, section="reward")
 
-    searchers = [BASELINES[name](env_config, reward_config) for name in args.methods]
+    searchers = [make_baseline(name, env_config, reward_config) for name in args.methods]
+    if args.protocol_b:
+        thresholds = (load_yaml(args.eval_config).get("protocol_b") or {}).get("heuristic") or {}
+        missing = [name for name in args.methods if name not in thresholds]
+        if missing:
+            parser.error(
+                f"no Protocol B threshold for {', '.join(missing)} in {args.eval_config}; "
+                "run scripts/tune_thresholds.py on the validation split first"
+            )
+        scorer = HeuristicScorer()
+        searchers += [
+            make_baseline(name, env_config, reward_config, scorer, thresholds[name])
+            for name in args.methods
+        ]
     seed_overrides = {}
     for index, path in enumerate(args.checkpoints):
         seed_overrides[len(searchers)] = checkpoint_seed(path, index)
