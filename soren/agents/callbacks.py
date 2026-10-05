@@ -82,6 +82,7 @@ class DiagnosticsCallback(BaseCallback):
         self.k = k
         self._actions: Counter[str] = Counter()
         self._endings: Counter[str] = Counter()
+        self._caps: list[int] = []
 
     def _on_step(self) -> bool:
         actions = np.asarray(self.locals["actions"]).reshape(-1)
@@ -91,6 +92,8 @@ class DiagnosticsCallback(BaseCallback):
         for done, info in zip(self.locals["dones"], self.locals["infos"], strict=True):
             if done:
                 self._endings[info.get("end_reason") or "unknown"] += 1
+                if "curriculum_cap" in info:
+                    self._caps.append(info["curriculum_cap"])
         return True
 
     def _on_rollout_end(self) -> None:
@@ -102,5 +105,8 @@ class DiagnosticsCallback(BaseCallback):
         total_endings = sum(self._endings.values())
         for name in ("correct", "wrong_declare", "timeout", "dead_end"):
             self.logger.record(f"behaviour/end_{name}", self._endings[name] / max(total_endings, 1))
+        if self._caps:
+            self.logger.record("curriculum/cap", float(np.mean(self._caps)))
         self._actions.clear()
         self._endings.clear()
+        self._caps.clear()

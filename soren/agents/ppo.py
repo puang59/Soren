@@ -11,7 +11,8 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecNormalize
 
 from soren.data.schema import GraphRecord
-from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig, Sampler
+from soren.env.cfg_nav_env import CFGNavEnv, EnvConfig
+from soren.env.curriculum import CurriculumConfig, CurriculumSampler
 from soren.env.rewards import RewardConfig
 
 _ACTIVATIONS = {"tanh": torch.nn.Tanh, "relu": torch.nn.ReLU}
@@ -61,12 +62,17 @@ def make_vec_env(
     reward_config: RewardConfig,
     cfg: PPOConfig,
     seed: int = 0,
-    sampler: Sampler | None = None,
+    curriculum: CurriculumConfig | None = None,
 ) -> VecEnv:
-    """Build ``cfg.n_envs`` monitored environments over ``graphs``."""
+    """Build ``cfg.n_envs`` monitored environments over ``graphs``.
+
+    With an enabled ``curriculum``, each environment gets its own size-capped sampler.
+    """
     graphs = list(graphs)
+    use_curriculum = curriculum is not None and curriculum.enabled
 
     def factory() -> Monitor:
+        sampler = CurriculumSampler(graphs, curriculum) if use_curriculum else None
         return Monitor(CFGNavEnv(graphs, env_config, reward_config, sampler))
 
     factories = [factory] * cfg.n_envs
