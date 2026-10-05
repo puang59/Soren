@@ -27,6 +27,7 @@ from gymnasium import spaces
 
 from soren.data.features import feature_dim, featurize
 from soren.data.schema import NODE_KINDS, GraphRecord
+from soren.env.rewards import RewardConfig, RewardModel, StepEvent
 
 VISIT_CLIP = 4
 STACK_CLIP = 32
@@ -64,28 +65,7 @@ class EnvConfig:
         return max(1, min(self.max_steps_cap, math.ceil(self.max_steps_per_node * num_nodes)))
 
 
-@dataclass
-class StepEvent:
-    """What happened in one environment step; the input to the reward function."""
-
-    graph: GraphRecord
-    action: str  # "move" | "backtrack" | "declare" | "invalid"
-    prev_node: int
-    node: int
-    revisit: bool = False
-    correct: bool | None = None  # set for "declare"
-    timeout: bool = False
-    dead_end: bool = False
-    terminal: bool = False
-
-
-RewardFn = Callable[[StepEvent], float]
 Sampler = Callable[[np.random.Generator], int]
-
-
-def sparse_reward(event: StepEvent) -> float:
-    """Placeholder reward: 1 for a correct declaration, 0 otherwise."""
-    return 1.0 if event.correct else 0.0
 
 
 class CFGNavEnv(gym.Env):
@@ -95,7 +75,7 @@ class CFGNavEnv(gym.Env):
         self,
         graphs: Sequence[GraphRecord],
         config: EnvConfig | None = None,
-        reward_fn: RewardFn = sparse_reward,
+        reward: RewardConfig | None = None,
         sampler: Sampler | None = None,
     ) -> None:
         super().__init__()
@@ -103,7 +83,7 @@ class CFGNavEnv(gym.Env):
             raise ValueError("CFGNavEnv needs at least one graph")
         self.graphs = list(graphs)
         self.config = config or EnvConfig()
-        self.reward_fn = reward_fn
+        self.reward_model = RewardModel(reward)
         self.sampler = sampler
 
         k = self.config.k
@@ -180,7 +160,9 @@ class CFGNavEnv(gym.Env):
         self.first_hit_step: int | None = 0 if self.node in self.graph.vuln_set else None
         self.is_success = False
         self.end_reason: str | None = None
-        self.episode_return = 0.0
+        self.episode_return = 0.0  # unshaped; this is the return to report
+        self.shaped_return = 0.0
+        self._last_reward = 0.0
         self._done = False
         self._last_action = "RESET"
         self._started = True
@@ -262,8 +244,10 @@ class CFGNavEnv(gym.Env):
         event.terminal = terminated or truncated
         self._done = event.terminal
 
-        reward = float(self.reward_fn(event))
-        self.episode_return += reward
+        unshaped, reward = self.reward_model(event)
+        self._last_reward = unshaped
+        self.episode_return += unshaped
+        self.shaped_return += reward
         return self._observation(), reward, terminated, truncated, self._info()
 
     def _arrive(self, node: int) -> None:
@@ -333,5 +317,7 @@ class CFGNavEnv(gym.Env):
             "first_declared_node": self.declared[0] if self.declared else None,
             "first_hit_step": self.first_hit_step,
             "end_reason": self.end_reason,
+            "reward_unshaped": self._last_reward,
             "episode_return": self.episode_return,
+            "shaped_return": self.shaped_return,
         }
