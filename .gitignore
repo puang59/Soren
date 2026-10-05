@@ -21,3 +21,6 @@ graphify-out/
 
 # OS
 .DS_Store
+
+# Locally installed tools (Joern)
+/.tools/

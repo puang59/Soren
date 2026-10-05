@@ -148,8 +148,30 @@ def test_parquet_round_trip(tmp_path):
     assert isinstance(loaded.loc[0, "flaw_lines"], list)
 
 
-def test_non_canonical_parquet_is_rejected(tmp_path):
+def test_raw_parquet_is_canonicalised(tmp_path):
     path = tmp_path / "raw.parquet"
     msr_frame().to_parquet(path)
-    with pytest.raises(BigVulFormatError, match="not a canonical file"):
-        load_bigvul(path)
+    pd.testing.assert_frame_equal(load_bigvul(path), canonicalise(msr_frame()))
+    bad = tmp_path / "bad.parquet"
+    msr_frame().drop(columns=["vul"]).to_parquet(bad)
+    with pytest.raises(BigVulFormatError, match="vul"):
+        load_bigvul(bad)
+
+
+def test_directory_of_parquet_files_is_concatenated_in_name_order(tmp_path):
+    """The Hugging Face mirror ships one Parquet file per split."""
+    first, second = msr_frame().iloc[:1], msr_frame().iloc[1:]
+    second.to_parquet(tmp_path / "a-test.parquet")
+    first.to_parquet(tmp_path / "b-train.parquet")
+    frame = load_bigvul(tmp_path)
+    assert frame["commit_id"].tolist() == ["bbb", "ccc", "aaa"]
+    assert frame["sample_id"].tolist() == ["bigvul_000000", "bigvul_000001", "bigvul_000002"]
+    assert tuple(frame.columns) == CANONICAL_COLUMNS
+    with pytest.raises(BigVulFormatError, match="no Parquet files"):
+        load_bigvul(_empty_dir(tmp_path))
+
+
+def _empty_dir(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    return empty

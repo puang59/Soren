@@ -143,22 +143,40 @@ def canonicalise(raw: pd.DataFrame) -> pd.DataFrame:
     return out[list(CANONICAL_COLUMNS)]
 
 
-def load_bigvul(path: str | Path) -> pd.DataFrame:
-    """Load a BigVul CSV (any known release) or a canonical Parquet file.
+def _load_parquet(path: Path) -> pd.DataFrame:
+    """Read one Parquet file: either an already canonical frame or a raw BigVul table."""
+    import pyarrow.parquet as pq
 
-    Only the needed columns are read from CSV, which keeps memory in check: the full file
-    carries the patch and CVE metadata for every row.
+    available = pq.read_schema(path).names
+    if all(column in available for column in CANONICAL_COLUMNS):
+        frame = pd.read_parquet(path, columns=list(CANONICAL_COLUMNS))
+        frame["flaw_lines"] = [list(v) for v in frame["flaw_lines"]]
+        frame["flaw_line_indices"] = [[int(i) for i in v] for v in frame["flaw_line_indices"]]
+        return frame
+    mapping = resolve_columns(available)
+    return canonicalise(pd.read_parquet(path, columns=sorted(set(mapping.values()))))
+
+
+def load_bigvul(path: str | Path) -> pd.DataFrame:
+    """Load BigVul from a CSV file, a Parquet file, or a directory of Parquet files.
+
+    Any known release is accepted, as is a canonical file written by
+    :func:`convert_to_parquet`. A directory is read in file-name order and concatenated, which
+    is how the Hugging Face mirror ships the dataset (one file per split). Only the needed
+    columns are read, which keeps memory in check: the full table carries the patch and CVE
+    metadata for every row.
     """
     path = Path(path)
+    if path.is_dir():
+        files = sorted(path.glob("*.parquet"))
+        if not files:
+            raise BigVulFormatError(f"{path}: no Parquet files found")
+        frame = pd.concat([_load_parquet(file) for file in files], ignore_index=True)
+        # Ids follow the position in the concatenated table, so they are unique across files.
+        frame["sample_id"] = [f"bigvul_{i:06d}" for i in range(len(frame))]
+        return frame
     if path.suffix == ".parquet":
-        frame = pd.read_parquet(path)
-        missing = [c for c in CANONICAL_COLUMNS if c not in frame.columns]
-        if missing:
-            raise BigVulFormatError(f"{path}: not a canonical file, missing {missing}")
-        for column in ("flaw_lines", "flaw_line_indices"):
-            frame[column] = [list(v) for v in frame[column]]
-        frame["flaw_line_indices"] = [[int(i) for i in v] for v in frame["flaw_line_indices"]]
-        return frame[list(CANONICAL_COLUMNS)]
+        return _load_parquet(path)
 
     header = pd.read_csv(path, nrows=0).columns
     mapping = resolve_columns(header)
