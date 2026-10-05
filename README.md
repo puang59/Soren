@@ -76,6 +76,27 @@ Each run writes its resolved configuration, the best and final checkpoints, the 
 history and TensorBoard logs to `runs/<name>/`. Hyperparameters live in `configs/ppo.yaml`,
 environment and reward settings in `configs/env.yaml`.
 
+## Evaluation and visualizer
+
+```bash
+# Baselines and a checkpoint through one harness; per-episode results go to Parquet.
+python scripts/evaluate.py --graphs data/synthetic/val.jsonl --split val \
+    --methods dfs bfs random_walk random_order line_order \
+    --checkpoints runs/synthetic-demo/best_model.zip --out runs/synthetic-demo/eval_val.parquet
+
+# Confidence intervals and paired tests against a reference method.
+python scripts/summarize_results.py --results runs/synthetic-demo/eval_val.parquet --reference ppo
+
+# Record traces, then replay them in the browser.
+python scripts/make_traces.py --graphs data/synthetic/val.jsonl --limit 20 --methods dfs bfs \
+    --checkpoints runs/synthetic-demo/best_model.zip --out runs/synthetic-demo/traces
+streamlit run soren/viz/app.py -- --graphs data/synthetic/val.jsonl \
+    --traces runs/synthetic-demo/traces
+```
+
+The visualizer shows the control flow graph next to the source and steps through an episode.
+Ground truth stays hidden until you switch it on.
+
 ## Layout
 
 | Path | Contents |
