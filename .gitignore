@@ -1,0 +1,23 @@
+# Data and run artefacts
+data/
+runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local tooling output
+graphify-out/
+
+# OS
+.DS_Store

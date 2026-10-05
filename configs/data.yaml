@@ -1,0 +1,9 @@
+# Dataset selection and preprocessing (plan sections 7-9).
+cwes: ["CWE-119", "CWE-125"]
+min_lines: 5
+max_lines: 300
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 0
