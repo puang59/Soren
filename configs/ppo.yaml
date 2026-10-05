@@ -1,2 +1,20 @@
-# Placeholder; populated by the ppo issue.
-{}
+# MaskablePPO hyperparameters (plan section 12.1).
+total_timesteps: 2000000
+n_envs: 16
+n_steps: 512
+batch_size: 512
+n_epochs: 10
+learning_rate: 0.0003
+lr_schedule: linear        # decays to zero over training
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.01             # raise to 0.02-0.05 if the policy collapses to immediate DECLARE
+vf_coef: 0.5
+max_grad_norm: 0.5
+net_arch: [256, 256]       # separate actor and critic networks of this shape
+activation: tanh
+normalize_reward: true     # observations are already in [0, 1]
+vec_env: subproc
+device: cpu
+eval_freq: 50000           # timesteps between validation evaluations
