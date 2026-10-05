@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from helpers import diamond_graph, line_graph, loop_graph, make_graph
 
-from soren.baselines import BFS, DFS, EpisodeResult, RandomWalk, Searcher
+from soren.baselines import BFS, DFS, EpisodeResult, LineOrder, RandomOrder, RandomWalk, Searcher
 from soren.data.synthetic import SyntheticConfig, generate_dataset
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
@@ -27,8 +27,9 @@ def tree_graph(vuln: int):
 
 
 def test_searchers_satisfy_the_protocol():
-    for searcher in (BFS(), DFS(), RandomWalk()):
+    for searcher in (BFS(), DFS(), RandomWalk(), RandomOrder(), LineOrder()):
         assert isinstance(searcher.name, str)
+        assert isinstance(searcher.stochastic, bool)
         run: Searcher = searcher
         assert isinstance(run.run(line_graph(), 50, rng()), EpisodeResult)
 
@@ -133,3 +134,55 @@ def test_custom_reward_config_is_used():
     assert result.cumulative_reward == pytest.approx(2 * -1.0 + 10.0)
     result = BFS(reward_config=reward).run(line_graph(3, vuln=2), 50, rng())
     assert result.cumulative_reward == pytest.approx(2 * -1.0 + 10.0)
+
+
+def test_line_order_reads_top_to_bottom():
+    # Lines are out of step with node ids: node 3 sits above node 2.
+    kinds = ["ENTRY", "BRANCH", "ASSIGN", "CALL", "ASSIGN", "EXIT"]
+    edges = [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4), (4, 5)]
+    graph = make_graph(kinds, edges, [4], lines=[1, 2, 4, 3, 5, 6])
+    result = LineOrder().run(graph, 100, rng())
+    assert result.visit_order == [0, 1, 3, 2, 4]
+    assert result.success and result.declared_node == 4
+    assert result.nodes_inspected == 5
+    assert result.actions_taken == 5  # four further inspections plus the declaration
+    assert result.cumulative_reward == pytest.approx(4 * R.step + R.correct)
+
+
+def test_random_order_matches_the_analytic_expectation():
+    """One target among n nodes is found after (n + 1) / 2 inspections on average."""
+    graph = line_graph(18, vuln=7)  # 20 nodes
+    generator = rng(0)
+    inspected = [RandomOrder().run(graph, 1000, generator).nodes_inspected for _ in range(4000)]
+    assert np.mean(inspected) == pytest.approx((graph.num_nodes + 1) / 2, abs=0.3)
+    assert min(inspected) == 1 and max(inspected) == graph.num_nodes
+
+
+def test_random_order_is_a_seeded_permutation():
+    graph = GRAPHS[0]
+    a = RandomOrder().run(graph, 1000, rng(5))
+    b = RandomOrder().run(graph, 1000, rng(5))
+    assert a == b and a.success
+    assert len(set(a.visit_order)) == len(a.visit_order)
+    orders = {tuple(RandomOrder().run(graph, 1000, rng(s)).visit_order) for s in range(10)}
+    assert len(orders) > 1
+
+
+def test_order_searchers_respect_the_budget():
+    graph = line_graph(10, vuln=10)
+    for searcher in (LineOrder(), BFS()):
+        result = searcher.run(graph, 4, rng())
+        assert not result.success and result.end_reason == "timeout"
+        assert result.actions_taken == 4
+        assert result.cumulative_reward == pytest.approx(4 * R.step + R.timeout)
+
+
+def test_only_seeded_methods_are_marked_stochastic():
+    flags = {s.name: s.stochastic for s in (BFS(), DFS(), LineOrder(), RandomOrder(), RandomWalk())}
+    assert flags == {
+        "bfs": False,
+        "dfs": False,
+        "line_order": False,
+        "random_order": True,
+        "random_walk": True,
+    }

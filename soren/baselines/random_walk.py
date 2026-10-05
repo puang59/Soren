@@ -12,6 +12,7 @@ class RandomWalk(EnvSearcher):
     """Uniform choice among the valid ``MOVE`` and ``BACKTRACK`` actions."""
 
     name = "random_walk"
+    stochastic = True
 
     def choose(self, env: CFGNavEnv, rng: np.random.Generator) -> int | None:
         moves = [a for a in env.valid_actions() if a != env.declare_action]
