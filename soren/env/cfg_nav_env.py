@@ -243,6 +243,8 @@ class CFGNavEnv(gym.Env):
                 event.dead_end = True
         event.terminal = terminated or truncated
         self._done = event.terminal
+        if self._done and hasattr(self.sampler, "report"):
+            self.sampler.report(self.is_success)
 
         unshaped, reward = self.reward_model(event)
         self._last_reward = unshaped
@@ -306,6 +308,13 @@ class CFGNavEnv(gym.Env):
         return int(np.count_nonzero(self.visits))
 
     def _info(self) -> dict[str, Any]:
+        info = self._base_info()
+        cap = getattr(self.sampler, "cap", None)
+        if cap is not None:
+            info["curriculum_cap"] = cap
+        return info
+
+    def _base_info(self) -> dict[str, Any]:
         return {
             "graph_id": self.graph.sample_id,
             "current_node": self.node,

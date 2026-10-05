@@ -1,4 +1,4 @@
-"""Environment wrappers."""
+"""Environment wrappers and samplers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ import gymnasium as gym
 import numpy as np
 
 from soren.env.cfg_nav_env import CFGNavEnv
+from soren.env.curriculum import CurriculumConfig, CurriculumSampler
 from soren.viz.trace import Trace, TraceStep
+
+__all__ = ["CurriculumConfig", "CurriculumSampler", "TraceRecorder"]
 
 
 class TraceRecorder(gym.Wrapper):

@@ -14,7 +14,8 @@ from stable_baselines3.common.callbacks import CallbackList
 from soren.agents.callbacks import DiagnosticsCallback, ValidationCallback
 from soren.agents.ppo import PPOConfig, build_model, make_vec_env
 from soren.data.schema import GraphRecord
-from soren.env.cfg_nav_env import EnvConfig, Sampler
+from soren.env.cfg_nav_env import EnvConfig
+from soren.env.curriculum import CurriculumConfig
 from soren.env.rewards import RewardConfig
 
 
@@ -36,7 +37,7 @@ def train(
     env_config: EnvConfig | None = None,
     reward_config: RewardConfig | None = None,
     seed: int = 0,
-    sampler: Sampler | None = None,
+    curriculum: CurriculumConfig | None = None,
     tensorboard: bool = True,
 ) -> TrainResult:
     """Train on ``train_graphs``; evaluate on ``val_graphs`` every ``eval_freq`` timesteps.
@@ -60,12 +61,13 @@ def train(
                 "ppo": asdict(ppo_config),
                 "env": asdict(env_config),
                 "reward": asdict(reward_config),
+                "curriculum": asdict(curriculum or CurriculumConfig()),
             },
             indent=2,
         )
     )
 
-    venv = make_vec_env(train_graphs, env_config, reward_config, ppo_config, seed, sampler)
+    venv = make_vec_env(train_graphs, env_config, reward_config, ppo_config, seed, curriculum)
     try:
         model = build_model(
             venv, ppo_config, seed, tensorboard_log=str(run_dir / "tb") if tensorboard else None

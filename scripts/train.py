@@ -20,6 +20,7 @@ from soren.agents.train import train
 from soren.config import load_config
 from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
+from soren.env.curriculum import CurriculumConfig
 from soren.env.rewards import RewardConfig
 
 
@@ -35,6 +36,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--timesteps", type=int, help="override total_timesteps")
     parser.add_argument("--n-envs", type=int, help="override n_envs")
     parser.add_argument("--vec-env", choices=["subproc", "dummy"], help="override vec_env")
+    parser.add_argument(
+        "--curriculum",
+        action="store_true",
+        help="start on small graphs and widen (settings: curriculum section of --env-config)",
+    )
     args = parser.parse_args(argv)
 
     ppo_config = load_config(PPOConfig, args.config)
@@ -46,6 +52,9 @@ def main(argv: list[str] | None = None) -> None:
     ppo_config = replace(ppo_config, **{k: v for k, v in overrides.items() if v is not None})
     env_config = load_config(EnvConfig, args.env_config, section="env")
     reward_config = load_config(RewardConfig, args.env_config, section="reward")
+    curriculum = load_config(CurriculumConfig, args.env_config, section="curriculum")
+    if args.curriculum:
+        curriculum = replace(curriculum, enabled=True)
 
     train_graphs = read_jsonl(args.train)
     val_graphs = read_jsonl(args.val)
@@ -55,7 +64,14 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     result = train(
-        train_graphs, val_graphs, run_dir, ppo_config, env_config, reward_config, seed=args.seed
+        train_graphs,
+        val_graphs,
+        run_dir,
+        ppo_config,
+        env_config,
+        reward_config,
+        seed=args.seed,
+        curriculum=curriculum,
     )
     print("best validation metrics:")
     print(json.dumps(result.best_metrics, indent=2))
