@@ -35,6 +35,9 @@ class EpisodeResult:
     cumulative_reward: float
     """Unshaped return under the environment's reward configuration."""
     declared_node: int | None = None
+    """The last node declared."""
+    first_declared_node: int | None = None
+    """The first node declared; differs from ``declared_node`` only with a declare budget."""
     first_hit_step: int | None = None
     end_reason: str = ""
     visit_order: list[int] = field(default_factory=list)
@@ -106,6 +109,7 @@ class EnvSearcher:
             actions_taken=info["steps"],
             cumulative_reward=float(reward),
             declared_node=info["declared_node"],
+            first_declared_node=info["first_declared_node"],
             first_hit_step=info["first_hit_step"],
             end_reason=end_reason,
             visit_order=visit_order,
@@ -168,6 +172,7 @@ class OrderSearcher:
             actions_taken=steps,
             cumulative_reward=reward,
             declared_node=hit,
+            first_declared_node=hit,
             first_hit_step=first_hit_step,
             end_reason=end_reason,
             visit_order=visit_order,

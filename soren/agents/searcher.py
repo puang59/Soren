@@ -58,6 +58,7 @@ def evaluate_policy(
                 actions_taken=info["steps"],
                 cumulative_reward=float(info["episode_return"]),
                 declared_node=info["declared_node"],
+                first_declared_node=info["first_declared_node"],
                 first_hit_step=info["first_hit_step"],
                 end_reason=info["end_reason"] or "",
                 visit_order=visit_order,
@@ -82,6 +83,7 @@ class PolicySearcher:
         self.reward_config = reward_config
         self.deterministic = deterministic
         self.name = name
+        self.stochastic = not deterministic
 
     def run(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> EpisodeResult:
         return evaluate_policy(
