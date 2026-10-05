@@ -43,6 +43,8 @@ class EpisodeResult:
 
 class Searcher(Protocol):
     name: str
+    stochastic: bool
+    """Whether results depend on the random generator passed to ``run``."""
 
     def run(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> EpisodeResult:
         """Search ``graph`` for a vulnerable node within ``max_steps`` actions."""
@@ -57,6 +59,7 @@ class EnvSearcher:
     """
 
     name = "env_searcher"
+    stochastic = False
 
     def __init__(
         self, env_config: EnvConfig | None = None, reward_config: RewardConfig | None = None
@@ -104,6 +107,68 @@ class EnvSearcher:
             cumulative_reward=float(reward),
             declared_node=info["declared_node"],
             first_hit_step=info["first_hit_step"],
+            end_reason=end_reason,
+            visit_order=visit_order,
+        )
+
+
+class OrderSearcher:
+    """A baseline defined only by the order in which it inspects nodes.
+
+    Such a search may jump between nodes that are not adjacent, which the environment's
+    actions cannot do, so it is simulated directly: the first node is free (like standing on
+    ENTRY), each further node costs one step, and the final declaration is one more action.
+    ``actions_taken`` is therefore a lower bound on what an edge-by-edge walk in the same
+    order would need.
+    """
+
+    name = "order_searcher"
+    stochastic = False
+
+    def __init__(self, reward_config: RewardConfig | None = None) -> None:
+        self.reward_config = reward_config or RewardConfig()
+
+    def order(self, graph: GraphRecord, rng: np.random.Generator) -> list[int]:
+        """Nodes in the order they are inspected."""
+        raise NotImplementedError
+
+    def run(self, graph: GraphRecord, max_steps: int, rng: np.random.Generator) -> EpisodeResult:
+        cfg = self.reward_config
+        visit_order: list[int] = []
+        steps = 0
+        reward = 0.0
+        hit: int | None = None
+        end_reason = "exhausted"
+
+        for position, node in enumerate(self.order(graph, rng)):
+            visit_order.append(node)
+            if position > 0:
+                steps += 1
+                reward += cfg.step
+                if steps >= max_steps:
+                    end_reason = "timeout"
+                    break
+            if node in graph.vuln_set:
+                hit = node
+                break
+
+        first_hit_step = None
+        if hit is not None:
+            first_hit_step = steps
+            steps += 1  # the declaration
+            reward += cfg.correct
+            end_reason = "correct"
+        else:
+            reward += cfg.timeout
+        return EpisodeResult(
+            method=self.name,
+            graph_id=graph.sample_id,
+            success=hit is not None,
+            nodes_inspected=len(visit_order),
+            actions_taken=steps,
+            cumulative_reward=reward,
+            declared_node=hit,
+            first_hit_step=first_hit_step,
             end_reason=end_reason,
             visit_order=visit_order,
         )
