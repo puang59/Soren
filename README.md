@@ -27,6 +27,20 @@ pytest                 # full suite
 pytest -m "not slow"   # fast suite, as run in CI
 ```
 
+## Data
+
+Soren trains on [BigVul](https://github.com/ZeoVan/MSR_20_Code_vulnerability_CSV_Dataset)
+(Fan et al., MSR 2020). Download one of the following into `data/raw/` (the directory is
+git-ignored):
+
+- `MSR_data_cleaned.csv` from the BigVul repository. Flaw lines are derived from the diff
+  between the pre-fix and post-fix function.
+- The preprocessed CSVs from [LineVul](https://github.com/awsm-research/LineVul), which
+  already carry `flaw_line` and `flaw_line_index`.
+
+`soren.data.bigvul.load_bigvul` accepts either and maps it to one set of canonical columns.
+It stops with an error naming the column if a file lacks something it needs.
+
 ## Training
 
 Train a masked PPO agent on any JSONL file of graph records. Synthetic graphs are enough to
