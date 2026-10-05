@@ -1,6 +1,6 @@
 # Data and run artefacts
-data/
-runs/
+/data/
+/runs/
 
 # Python
 __pycache__/
