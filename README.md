@@ -41,6 +41,24 @@ git-ignored):
 `soren.data.bigvul.load_bigvul` accepts either and maps it to one set of canonical columns.
 It stops with an error naming the column if a file lacks something it needs.
 
+### Preparing the data
+
+```bash
+python scripts/01_filter_bigvul.py --input data/raw/MSR_data_cleaned.csv
+python scripts/02_write_sources.py
+```
+
+The first script keeps vulnerable functions of the CWEs in `configs/data.yaml` that have
+usable flaw lines, and records the row count after every filter in
+`data/processed/attrition.json`. The second writes one C file per function under
+`data/interim/src/`, in batches of 500, for Joern.
+
+### Joern
+
+CFG extraction uses [Joern](https://joern.io). Install it with the installer script from the
+Joern documentation and make sure `joern` and `joern-parse` are on your `PATH`. Joern runs on
+the JVM; check the Joern release notes for the JDK version your release needs.
+
 ## Training
 
 Train a masked PPO agent on any JSONL file of graph records. Synthetic graphs are enough to
