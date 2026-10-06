@@ -1,0 +1,15 @@
+vuln_bucket,method,episodes,localization_accuracy,success_rate,nodes_inspected_success,nodes_inspected_all,actions_success,actions_all,normalised_cost,cumulative_reward,path_efficiency
+multiple,bfs+heuristic,52,0.3462,0.3462,9.1667,38.8846,9.1667,97.7115,0.779,-0.0896,2.2879
+multiple,dfs+heuristic,52,0.3654,0.3654,9.1579,38.5577,10.7368,96.4615,0.7665,-0.1035,2.8553
+multiple,heuristic_first+heuristic,52,0.3846,0.3846,8.0,37.7115,8.0,93.3077,0.732,-0.0244,1.7926
+multiple,line_order+heuristic,52,0.3654,0.3654,8.6842,38.3846,8.6842,95.7115,0.7584,-0.0571,2.0752
+multiple,ppo,260,0.2654,0.2654,3.5072,42.3385,5.1449,105.5038,0.7986,-0.156,3.2633
+multiple,random_order+heuristic,260,0.2385,0.2385,3.6129,41.0577,3.6129,107.1692,0.8256,-0.2127,1.7062
+multiple,random_walk+heuristic,260,0.2615,0.2615,3.0735,42.7462,6.0882,107.8231,0.7918,-0.4182,3.4485
+single,bfs+heuristic,75,0.1867,0.1867,9.2857,41.2,9.2857,106.9067,0.8658,-0.2997,1.4244
+single,dfs+heuristic,75,0.2133,0.2133,8.5625,39.4933,10.75,102.1333,0.8365,-0.28,1.5173
+single,heuristic_first+heuristic,75,0.1867,0.1867,7.8571,40.9333,7.8571,106.64,0.8593,-0.2871,1.2416
+single,line_order+heuristic,75,0.2133,0.2133,8.5625,39.4933,8.5625,101.6667,0.8383,-0.2512,1.2819
+single,ppo,375,0.1733,0.1733,3.6308,42.4347,3.6308,111.0933,0.8688,-0.2721,1.0
+single,random_order+heuristic,375,0.1013,0.1013,6.7105,43.32,6.7105,114.9627,0.9199,-0.3866,0.9692
+single,random_walk+heuristic,375,0.1093,0.1093,2.5366,44.8,3.5854,118.8027,0.9104,-0.5186,1.3252
