@@ -28,6 +28,49 @@ per-statement features can say, not the search policy. On synthetic graphs with 
 signal the same agent localizes 98% while inspecting fewer nodes than DFS. The report has the
 details and the caveats.
 
+## Presenting it
+
+Two ways to show the agent working. Both need the processed test graphs
+(`data/processed/graphs_test.jsonl`) and a trained checkpoint
+(`runs/final/base/seed1/best_model.zip`); see the sections below for how to produce them.
+Neither needs Joern or a network connection at presentation time.
+
+### In the browser
+
+```bash
+streamlit run soren/viz/app.py -- --live --graphs data/processed/graphs_test.jsonl
+```
+
+![The visualizer after the agent has found the flaw](docs/images/visualizer.png)
+
+The page opens at `http://localhost:8501`. In the sidebar:
+
+1. **Function** picks a test function. Keep the size slider low so the graph is readable.
+2. **Method** is `ppo` for the trained agent, or a baseline such as `dfs`.
+3. Press **▶** to advance one action, or **Play** to run. The graph and the source move
+   together; under them are the steps so far and the agent's action probabilities.
+4. Switch on **Show ground truth** once the agent has declared, to reveal the answer.
+5. **Compare with** puts a second method beside the first on the same function.
+
+### In the terminal
+
+```bash
+python -m soren.demo                    # the agent on a function it gets right
+python -m soren.demo --failure          # a function it gets wrong
+python -m soren.demo --compare dfs      # the agent, then DFS, then a summary
+python -m soren.demo --step             # advance with Enter instead of a timer
+python -m soren.demo --list             # sample ids that fit on one screen
+python -m soren.demo --graph bigvul_048191 --method heuristic_first
+```
+
+The source is printed with the current line highlighted, visited lines marked with `·`, and
+the declaration marked `✔` or `✘`. The ground truth (`◆`) appears only at the end.
+
+With no dataset or checkpoint at all, `python -m soren.demo --synthetic` runs depth-first
+search on a generated function, which is enough to show the mechanics.
+
+A five-minute talk track built around these is in [`docs/demo.md`](docs/demo.md).
+
 ## Setup
 
 Requires Python 3.11 or newer.
