@@ -250,3 +250,49 @@ def test_app_explains_missing_data(monkeypatch, tmp_path, demo):
     (tmp_path / "empty").mkdir()
     app = run_app(monkeypatch, graphs_path, tmp_path / "empty")
     assert "No traces in" in app.info[0].value
+
+
+def test_compare_mode_shows_two_methods_advancing_together(monkeypatch, demo):
+    graphs, graphs_path, traces = demo
+    app = run_app(monkeypatch, graphs_path, traces)
+    compare = app.selectbox(key="compare")
+    assert compare.options == ["(none)", "dfs", "ppo"]  # bfs is the primary method
+    assert not app.metric  # single view has no side-by-side counters
+
+    compare.select("dfs").run()
+    assert not app.exception
+    assert [h.value for h in app.subheader] == ["bfs", "dfs"]
+    assert app.session_state["step"] == 0
+    assert [m.value for m in app.metric][::2] == [f"1 of {graphs[0].num_nodes}"] * 2
+
+    bfs = Trace.load(traces / "bfs" / f"{graphs[0].sample_id}.json")
+    dfs = Trace.load(traces / "dfs" / f"{graphs[0].sample_id}.json")
+    longest = max(len(bfs.steps), len(dfs.steps))
+    assert app.slider(key="step").max == longest
+
+    app.button(key="next").click().run()
+    app.button(key="next").click().run()
+    actions = [m.value for m in app.metric][1::2]
+    assert actions == [f"2 of {len(bfs.steps)}", f"2 of {len(dfs.steps)}"]
+
+    # At the end both outcomes are shown; the shorter episode waited at its last step.
+    app.slider(key="step").set_value(longest).run()
+    assert not app.exception
+    banners = [b.value for b in (*app.success, *app.error)]
+    assert any(b.startswith("bfs ") for b in banners) and any(b.startswith("dfs ") for b in banners)
+    actions = [m.value for m in app.metric][1::2]
+    assert actions == [
+        f"{len(bfs.steps)} of {len(bfs.steps)}",
+        f"{len(dfs.steps)} of {len(dfs.steps)}",
+    ]
+
+    app.selectbox(key="compare").select("(none)").run()
+    assert not app.exception and not app.metric
+
+
+def test_compare_option_is_hidden_when_no_other_method_has_the_graph(monkeypatch, tmp_path, demo):
+    graphs, graphs_path, _ = demo
+    only = tmp_path / "only"
+    DFS().trace(graphs[0], 100, rng()).save(only / "dfs" / f"{graphs[0].sample_id}.json")
+    app = run_app(monkeypatch, graphs_path, only)
+    assert not [box for box in app.selectbox if box.key == "compare"]
