@@ -16,12 +16,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from soren.baselines.heuristic import make_baseline
 from soren.config import load_config
 from soren.data.schema import GraphRecord, read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
+from soren.viz.explain import CWE_NAMES, fix_diff
 from soren.viz.render import action_labels
 from soren.viz.trace import Trace
 
@@ -62,11 +64,46 @@ def trace_payload(graph: GraphRecord, trace: Trace) -> dict:
     }
 
 
-def graph_payload(graph: GraphRecord) -> dict:
+def load_background(raw_dir: str, filtered: str) -> dict[str, dict]:
+    """CVE, commit and fixed function body per sample, where the raw dataset is available."""
+    background: dict[str, dict] = {}
+    if Path(filtered).is_file():
+        frame = pd.read_parquet(filtered, columns=["sample_id", "func_before", "func_after"])
+        for row in frame.itertuples(index=False):
+            background[row.sample_id] = {"before": row.func_before, "after": row.func_after}
+    files = sorted(Path(raw_dir).glob("*.parquet"))
+    if files:
+        columns = ["CVE ID", "CVE Page", "commit_message", "codeLink"]
+        raw = pd.concat([pd.read_parquet(f, columns=columns) for f in files], ignore_index=True)
+        # Sample ids are positions in this concatenation, as assigned by load_bigvul.
+        for sample_id, entry in background.items():
+            row = raw.iloc[int(sample_id.rsplit("_", 1)[1])]
+            entry.update(
+                cve=row["CVE ID"] if isinstance(row["CVE ID"], str) else "",
+                cve_url=row["CVE Page"] if isinstance(row["CVE Page"], str) else "",
+                commit_url=row["codeLink"] if isinstance(row["codeLink"], str) else "",
+                commit_message=(
+                    row["commit_message"].strip()[:700]
+                    if isinstance(row["commit_message"], str)
+                    else ""
+                ),
+            )
+    return background
+
+
+def graph_payload(graph: GraphRecord, background: dict) -> dict:
+    info = background.get(graph.sample_id, {})
     return {
         "id": graph.sample_id,
         "project": graph.project,
         "cwe": graph.cwe,
+        "cwe_name": CWE_NAMES.get(graph.cwe, ""),
+        "cve": info.get("cve", ""),
+        "cve_url": info.get("cve_url", ""),
+        "commit": graph.commit_id,
+        "commit_url": info.get("commit_url", ""),
+        "commit_message": info.get("commit_message", ""),
+        "fix": fix_diff(info["before"], info["after"]) if info.get("after") else [],
         "source": graph.source_lines,
         "nodes": [
             {"id": n.id, "line": n.line, "kind": n.kind, "depth": n.depth, "code": n.code}
@@ -89,6 +126,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-nodes", type=int, default=32, help="skip larger functions")
     parser.add_argument("--max-lines", type=int, default=60)
     parser.add_argument("--env-config", default="configs/env.yaml")
+    parser.add_argument("--raw", default="data/raw/bigvul_hf", help="for CVE and commit details")
+    parser.add_argument("--filtered", default="data/interim/filtered.parquet", help="for the fix")
     args = parser.parse_args(argv)
 
     env = load_config(EnvConfig, args.env_config, section="env")
@@ -108,9 +147,10 @@ def main(argv: list[str] | None = None) -> None:
         for g in read_jsonl(args.graphs)
         if g.num_nodes <= args.max_nodes and len(g.source_lines) <= args.max_lines
     ]
+    background = load_background(args.raw, args.filtered)
     episodes = []
     for graph in graphs:
-        payload = graph_payload(graph)
+        payload = graph_payload(graph, background)
         budget = env.max_steps_for(graph.num_nodes)
         for name, searcher in searchers.items():
             trace = searcher.trace(graph, budget, np.random.default_rng(0))
