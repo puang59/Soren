@@ -6,7 +6,27 @@ A reinforcement learning agent for source-level vulnerability localization. Inst
 classifying a whole function in one pass, Soren learns to walk a function's control flow
 graph and declare the statement responsible for a vulnerability.
 
-The design and roadmap live in [`plan/IMPLEMENTATION_PLAN.md`](plan/IMPLEMENTATION_PLAN.md).
+- **Report:** [`docs/report.md`](docs/report.md)
+- **Demo script:** [`docs/demo.md`](docs/demo.md)
+- **Experiment notes and figures:** [`experiments/`](experiments/)
+- **Design and roadmap:** [`plan/IMPLEMENTATION_PLAN.md`](plan/IMPLEMENTATION_PLAN.md)
+
+## Results in brief
+
+On 127 held-out BigVul functions (CWE-119 and CWE-125), with one declaration per function:
+
+| Method | Functions localized |
+|---|---|
+| DFS or line order, stopping at the first suspicious statement | 27.6% |
+| **PPO agent** | **21.1%** |
+| Random guess | 12.5% |
+
+The agent learns something but does not beat simple baselines; the difference between them is
+not statistically significant on this sample. A classifier that sees every statement at once
+reaches about 23% at top-1, with or without CodeBERT embeddings, so the limit is what
+per-statement features can say, not the search policy. On synthetic graphs with a clean
+signal the same agent localizes 98% while inspecting fewer nodes than DFS. The report has the
+details and the caveats.
 
 ## Setup
 
@@ -129,7 +149,41 @@ streamlit run soren/viz/app.py -- --graphs data/synthetic/val.jsonl \
 ```
 
 The visualizer shows the control flow graph next to the source and steps through an episode.
-Ground truth stays hidden until you switch it on.
+Ground truth stays hidden until you switch it on, and "Compare with" puts a second method
+beside the first.
+
+## Reproducing the BigVul experiments
+
+After the data pipeline above has produced `data/processed/graphs_{train,val,test}.jsonl`:
+
+```bash
+# Final configuration, five seeds (about 4 minutes each on a laptop CPU).
+for s in 0 1 2 3 4; do
+  python scripts/run_arm.py --group final --name base --seed $s --timesteps 1000000
+done
+
+# An ablation arm is the default plus overrides; collect a group into a table.
+python scripts/run_arm.py --group ablations --name declares_3 --seed 0 --timesteps 500000 \
+    --set env.max_declares=3
+python scripts/collect_runs.py --group ablations
+
+# Reference classifier, and Protocol B thresholds tuned on validation.
+python scripts/train_classifier.py --seed 0 --out runs/classifier/tier_L_seed0.pt
+python scripts/tune_thresholds.py --graphs data/processed/graphs_val.jsonl --write-config
+
+# The test-set evaluation. Run it once, after everything else is frozen.
+python scripts/final_evaluation.py --allow-test
+python scripts/make_figures.py
+```
+
+The frozen configuration is the default in `configs/ppo.yaml` and `configs/env.yaml`: Tier L
+features, K = 6, one declaration, no shaping, no curriculum. The commit it was evaluated
+from is tagged `v0.1-frozen`.
+
+Statement embeddings (Tier E) are optional: `pip install -e ".[embed]"`, then
+`python scripts/07_embed_statements.py`.
+
+To try the pipeline without BigVul or Joern, use the synthetic graphs in the Training section.
 
 ## Layout
 
@@ -143,3 +197,5 @@ Ground truth stays hidden until you switch it on.
 | `soren/viz` | Trace format and traversal visualizer |
 | `scripts` | Data pipeline, training and evaluation entry points |
 | `configs` | YAML configuration |
+| `experiments` | Experiment notes, result tables and figures |
+| `docs` | Report and demo script |
