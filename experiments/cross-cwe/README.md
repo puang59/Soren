@@ -14,7 +14,7 @@ of the same or the other CWE (805 and 218 training graphs; 101 and 27 validation
 |---|---|---|
 | CWE-119 | 0.158 ± 0.016 | 0.123 ± 0.017 |
 | CWE-125 | 0.191 ± 0.009 | 0.148 ± 0.000 |
-| random guess | 0.130 | 0.158 |
+| random guess | 0.141 | 0.118 |
 
 ## Reading the results
 
