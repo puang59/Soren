@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soren · CFG traversal</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Soren</h1>
+  <p>Watch a method walk a function's control flow graph, one statement at a time, until it
+  declares the statement it believes is the vulnerability.</p>
+</header>
+
+<section class="controls" aria-label="Episode">
+  <label>Function
+    <select id="function"></select>
+  </label>
+  <label>Method
+    <select id="method"></select>
+  </label>
+  <label>Compare with
+    <select id="compare"></select>
+  </label>
+  <label class="check">
+    <input type="checkbox" id="truth"> Show ground truth
+  </label>
+</section>
+
+<section class="transport" aria-label="Playback">
+  <button id="first" title="Back to the start (Home)">⏮</button>
+  <button id="prev" title="One step back (←)">◀</button>
+  <button id="next" title="One step forward (→)">▶</button>
+  <button id="play" title="Play or pause (Space)">Play</button>
+  <label class="speed">Speed
+    <select id="speed">
+      <option value="1200">slow</option>
+      <option value="600" selected>normal</option>
+      <option value="250">fast</option>
+    </select>
+  </label>
+  <input type="range" id="step" min="0" max="0" value="0" aria-label="Step">
+  <output id="step-label">0 / 0</output>
+</section>
+
+<ul class="legend" aria-label="Colour key">
+  <li><span class="swatch current"></span>current statement</li>
+  <li><span class="swatch visited"></span>visited</li>
+  <li><span class="swatch ok"></span>declared, correct</li>
+  <li><span class="swatch bad"></span>declared, wrong</li>
+  <li><span class="swatch truth"></span>ground truth</li>
+  <li><span class="swatch stack"></span>on the path back</li>
+</ul>
+
+<main id="panels"></main>
+
+<footer>
+  <p>Data: BigVul test functions (CWE-119, CWE-125). Baselines stop automatically when they
+  reach a vulnerable statement; the agent has to decide to declare. Keys: ← → step, Space
+  play, Home restart.</p>
+</footer>
+
+<template id="panel-template">
+  <article class="panel">
+    <h2></h2>
+    <p class="status"></p>
+    <p class="outcome" hidden></p>
+    <div class="views">
+      <div class="graph"><svg role="img" aria-label="Control flow graph"></svg></div>
+      <ol class="source"></ol>
+    </div>
+    <div class="details">
+      <div class="policy" hidden>
+        <h3>What the agent is weighing</h3>
+        <ul class="options"></ul>
+        <p class="value"></p>
+      </div>
+      <div class="log">
+        <h3>Steps so far</h3>
+        <table><thead><tr><th>#</th><th>at line</th><th>action</th><th>to line</th><th>reward</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </article>
+</template>
+
+<script src="data/episodes.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
