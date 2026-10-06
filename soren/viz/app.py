@@ -1,7 +1,11 @@
 """Traversal visualizer: replay how a method walked a function's control flow graph.
 
 Run with:
+    streamlit run soren/viz/app.py -- --live --graphs data/processed/graphs_test.jsonl
     streamlit run soren/viz/app.py -- --graphs data/synthetic/val.jsonl --traces runs/demo/traces
+
+In live mode the chosen method (a trained checkpoint or a baseline) is run on the spot, so no
+saved traces are needed. Replay mode plays traces written by ``scripts/make_traces.py``.
 
 ``--traces`` is a directory written by ``scripts/make_traces.py``: one sub-directory per
 method, one JSON file per graph. The paths can also be set in the sidebar or through the
@@ -16,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -36,6 +41,88 @@ LEGEND = (
     "stack. Green or red: declared, correct or wrong. Purple double outline: ground truth. "
     "Dashed edge: loop back edge."
 )
+
+
+DEFAULT_CHECKPOINT = "runs/final/base/seed1/best_model.zip"
+
+
+def live_defaults() -> tuple[bool, str]:
+    """Whether to start in live mode, and the checkpoint to load there."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--live", action="store_true", default=os.environ.get("SOREN_MODE") == "live"
+    )
+    parser.add_argument(
+        "--checkpoint", default=os.environ.get("SOREN_CHECKPOINT", DEFAULT_CHECKPOINT)
+    )
+    args, _ = parser.parse_known_args(sys.argv[1:])
+    return args.live, args.checkpoint
+
+
+@st.cache_resource(show_spinner="Loading checkpoint")
+def load_policy(path: str, modified: float):
+    from soren.agents.train import load_model
+
+    return load_model(path)
+
+
+@st.cache_data(show_spinner=False)
+def live_trace(
+    _graph: GraphRecord, graph_id: str, method: str, checkpoint: str, modified: float
+) -> dict:
+    """Run ``method`` on the graph now and return its trace."""
+    from soren.agents.searcher import PolicySearcher
+    from soren.baselines.heuristic import make_baseline
+    from soren.env.cfg_nav_env import EnvConfig
+
+    env = EnvConfig()
+    if method == "ppo":
+        searcher = PolicySearcher(load_policy(checkpoint, modified), env, name="ppo")
+    else:
+        searcher = make_baseline(method, env)
+    budget = env.max_steps_for(_graph.num_nodes)
+    return searcher.trace(_graph, budget, np.random.default_rng(0)).to_dict()
+
+
+def live_sidebar(graphs: dict[str, GraphRecord], checkpoint_default: str):
+    """Pick a checkpoint, a method and a function; everything is computed on the spot."""
+    from soren.baselines.heuristic import BASELINE_FACTORIES
+
+    st.sidebar.header("Live run")
+    checkpoint = st.sidebar.text_input("Checkpoint", checkpoint_default, key="checkpoint")
+    has_policy = Path(checkpoint).is_file()
+    if not has_policy:
+        st.sidebar.warning("Checkpoint not found; only the baselines are available.")
+    methods = (["ppo"] if has_policy else []) + sorted(BASELINE_FACTORIES)
+    method = st.sidebar.selectbox("Method", methods, key="live_method")
+
+    sizes = [g.num_nodes for g in graphs.values()]
+    low, high = min(sizes), max(sizes)
+    size_range = (low, high)
+    if low < high:
+        size_range = st.sidebar.slider(
+            "Graph size (nodes)", low, high, (low, min(high, 22)), key="live_sizes"
+        )
+    eligible = [g for g in graphs.values() if size_range[0] <= g.num_nodes <= size_range[1]]
+    if not eligible:
+        return None
+    graph_id = st.sidebar.selectbox(
+        "Function",
+        [g.sample_id for g in eligible],
+        format_func=lambda g: f"{g} · {graphs[g].num_nodes} nodes · {graphs[g].project}",
+        key="live_graph",
+    )
+    show_truth = st.sidebar.toggle("Show ground truth", value=False, key="truth")
+    choice = st.sidebar.selectbox(
+        "Compare with", [NO_COMPARISON, *(m for m in methods if m != method)], key="compare"
+    )
+    modified = Path(checkpoint).stat().st_mtime if has_policy else 0.0
+    graph = graphs[graph_id]
+    trace = Trace.from_dict(live_trace(graph, graph_id, method, checkpoint, modified))
+    other = None
+    if choice != NO_COMPARISON:
+        other = Trace.from_dict(live_trace(graph, graph_id, choice, checkpoint, modified))
+    return graph, trace, other, show_truth
 
 
 def default_paths() -> tuple[str, str]:
@@ -228,41 +315,58 @@ def main() -> None:
     st.title("Soren traversal visualizer")
 
     graphs_default, traces_default = default_paths()
+    live_default, checkpoint_default = live_defaults()
     st.sidebar.header("Data")
+    mode = st.sidebar.radio(
+        "Mode",
+        ["Live", "Replay"],
+        index=0 if live_default else 1,
+        horizontal=True,
+        key="mode",
+        help="Live runs the method now; Replay plays traces saved by scripts/make_traces.py.",
+    )
     graphs_path = st.sidebar.text_input("Graphs (JSONL)", graphs_default, key="graphs_path")
-    traces_dir = st.sidebar.text_input("Traces directory", traces_default, key="traces_dir")
     if not Path(graphs_path).is_file():
         st.info(f"Graph file not found: `{graphs_path}`. Set the path in the sidebar.")
         return
-    if not Path(traces_dir).is_dir():
-        st.info(
-            f"Traces directory not found: `{traces_dir}`. "
-            "Create traces with `scripts/make_traces.py`."
-        )
-        return
-
     graphs = load_graphs(graphs_path, Path(graphs_path).stat().st_mtime)
-    index = load_trace_index(traces_dir, Path(traces_dir).stat().st_mtime)
-    if index.empty:
-        st.info(f"No traces in `{traces_dir}`. Expected `<method>/<graph_id>.json` files.")
-        return
 
-    selection = sidebar(graphs, index)
-    if selection is None:
-        st.info("No episode matches the filters.")
-        return
-    method, graph_id, show_truth, compare_with = selection
-    graph = graphs[graph_id]
+    if mode == "Live":
+        picked = live_sidebar(graphs, checkpoint_default)
+        if picked is None:
+            st.info("No function matches the size filter.")
+            return
+        graph, trace, other, show_truth = picked
+    else:
+        traces_dir = st.sidebar.text_input("Traces directory", traces_default, key="traces_dir")
+        if not Path(traces_dir).is_dir():
+            st.info(
+                f"Traces directory not found: `{traces_dir}`. "
+                "Create traces with `scripts/make_traces.py`, or switch to Live mode."
+            )
+            return
+        index = load_trace_index(traces_dir, Path(traces_dir).stat().st_mtime)
+        if index.empty:
+            st.info(f"No traces in `{traces_dir}`. Expected `<method>/<graph_id>.json` files.")
+            return
+        selection = sidebar(graphs, index)
+        if selection is None:
+            st.info("No episode matches the filters.")
+            return
+        method, graph_id, show_truth, compare_with = selection
+        graph = graphs[graph_id]
 
-    def load(name: str) -> Trace:
-        row = index[(index["method"] == name) & (index["graph_id"] == graph_id)].iloc[0]
-        return Trace.load(row["path"])
+        def load(name: str) -> Trace:
+            row = index[(index["method"] == name) & (index["graph_id"] == graph_id)].iloc[0]
+            return Trace.load(row["path"])
 
-    trace = load(method)
-    other = load(compare_with) if compare_with else None
+        trace = load(method)
+        other = load(compare_with) if compare_with else None
+
     # In compare mode one control drives both episodes; the shorter one waits at its end.
     total = max(len(trace.steps), len(other.steps)) if other else len(trace.steps)
-    step = playback(total, f"{method}/{compare_with}/{graph_id}")
+    other_name = other.method if other else None
+    step = playback(total, f"{mode}/{trace.method}/{other_name}/{graph.sample_id}")
 
     if other is not None:
         compare_view(graph, [trace, other], step, show_truth)
