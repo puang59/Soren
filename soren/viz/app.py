@@ -20,8 +20,22 @@ import pandas as pd
 import streamlit as st
 
 from soren.data.schema import GraphRecord, read_jsonl
-from soren.viz.render import action_labels, cfg_dot, outcome_text, source_html, step_table
+from soren.viz.render import (
+    action_labels,
+    cfg_dot,
+    outcome_text,
+    replay_state,
+    source_html,
+    step_table,
+)
 from soren.viz.trace import Trace
+
+NO_COMPARISON = "(none)"
+LEGEND = (
+    "Orange: current node. Blue: visited, darker with more visits. Bold outline: on the path "
+    "stack. Green or red: declared, correct or wrong. Purple double outline: ground truth. "
+    "Dashed edge: loop back edge."
+)
 
 
 def default_paths() -> tuple[str, str]:
@@ -56,8 +70,14 @@ def load_trace_index(directory: str, modified: float) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["method", "graph_id", "success", "path"])
 
 
-def sidebar(graphs: dict[str, GraphRecord], index: pd.DataFrame) -> tuple[str, str, bool] | None:
-    """Method and graph pickers with filters; returns ``(method, graph_id, show_truth)``."""
+def sidebar(
+    graphs: dict[str, GraphRecord], index: pd.DataFrame
+) -> tuple[str, str, bool, str | None] | None:
+    """Method and graph pickers with filters.
+
+    Returns ``(method, graph_id, show_truth, compare_with)``; ``compare_with`` is a second
+    method to show side by side, or ``None``.
+    """
     st.sidebar.header("Episode")
     method = st.sidebar.selectbox("Method", sorted(index["method"].unique()), key="method")
     traces = index[index["method"] == method]
@@ -95,12 +115,19 @@ def sidebar(graphs: dict[str, GraphRecord], index: pd.DataFrame) -> tuple[str, s
         key="graph",
     )
     show_truth = st.sidebar.toggle("Show ground truth", value=False, key="truth")
-    return method, graph_id, show_truth
+
+    others = index[(index["graph_id"] == graph_id) & (index["method"] != method)]
+    compare_with = None
+    if not others.empty:
+        choice = st.sidebar.selectbox(
+            "Compare with", [NO_COMPARISON, *sorted(others["method"])], key="compare"
+        )
+        compare_with = None if choice == NO_COMPARISON else choice
+    return method, graph_id, show_truth, compare_with
 
 
-def playback(trace: Trace, episode_key: str) -> int:
-    """Step slider with play/pause; returns the current step."""
-    total = len(trace.steps)
+def playback(total: int, episode_key: str) -> int:
+    """Step slider with play/pause over ``total`` steps; returns the current step."""
     if st.session_state.get("episode") != episode_key:
         st.session_state["episode"] = episode_key
         st.session_state["step"] = 0
@@ -132,6 +159,70 @@ def playback(trace: Trace, episode_key: str) -> int:
     return int(st.session_state["step"])
 
 
+def progress_line(graph: GraphRecord, trace: Trace, step: int, show_truth: bool) -> None:
+    """Outcome banner once the episode is over, otherwise where the replay stands."""
+    total = len(trace.steps)
+    if step >= total:
+        report = st.success if trace.outcome.get("success") else st.error
+        report(outcome_text(graph, trace))
+    else:
+        st.caption(
+            f"Step {step} of {total}. Ground truth is {'shown' if show_truth else 'hidden'}."
+        )
+
+
+def policy_panel(graph: GraphRecord, trace: Trace, step: int) -> None:
+    upcoming = trace.steps[step] if step < len(trace.steps) else None
+    if upcoming is not None and upcoming.probs is not None:
+        labels = action_labels(graph, upcoming.node, len(upcoming.probs))
+        chart = pd.DataFrame({"action": labels, "probability": upcoming.probs})
+        if upcoming.mask is not None:
+            chart = chart[pd.Series(upcoming.mask)]  # hide actions that were not available
+        st.caption(f"Policy at this step (value estimate {upcoming.value:.3f})")
+        st.bar_chart(chart, x="action", y="probability", horizontal=True)
+    elif upcoming is not None:
+        st.caption("This method has no action probabilities to show.")
+
+
+def single_view(graph: GraphRecord, trace: Trace, step: int, show_truth: bool) -> None:
+    progress_line(graph, trace, step, show_truth)
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Control flow graph")
+        st.graphviz_chart(cfg_dot(graph, trace, step, show_truth), width="stretch")
+        st.caption(LEGEND)
+    with right:
+        st.subheader("Source")
+        st.markdown(source_html(graph, trace, step, show_truth), unsafe_allow_html=True)
+
+    st.subheader("Steps")
+    table_column, policy_column = st.columns([3, 2])
+    with table_column:
+        st.dataframe(step_table(graph, trace, step), hide_index=True, width="stretch")
+    with policy_column:
+        policy_panel(graph, trace, step)
+
+
+def compare_view(graph: GraphRecord, traces: list[Trace], step: int, show_truth: bool) -> None:
+    """Two methods on the same graph, side by side, advancing together."""
+    for column, trace in zip(st.columns(2), traces, strict=True):
+        own_step = min(step, len(trace.steps))
+        state = replay_state(trace, own_step)
+        with column:
+            st.subheader(trace.method)
+            counts = st.columns(2)
+            counts[0].metric("Nodes inspected", f"{len(state.visits)} of {graph.num_nodes}")
+            counts[1].metric("Actions", f"{own_step} of {len(trace.steps)}")
+            progress_line(graph, trace, own_step, show_truth)
+            st.graphviz_chart(cfg_dot(graph, trace, own_step, show_truth), width="stretch")
+            with st.expander("Source"):
+                st.markdown(source_html(graph, trace, own_step, show_truth), unsafe_allow_html=True)
+            with st.expander("Steps"):
+                st.dataframe(step_table(graph, trace, own_step), hide_index=True, width="stretch")
+                policy_panel(graph, trace, own_step)
+    st.caption(LEGEND)
+
+
 def main() -> None:
     st.set_page_config(page_title="Soren traversal visualizer", layout="wide")
     st.title("Soren traversal visualizer")
@@ -160,49 +251,23 @@ def main() -> None:
     if selection is None:
         st.info("No episode matches the filters.")
         return
-    method, graph_id, show_truth = selection
+    method, graph_id, show_truth, compare_with = selection
     graph = graphs[graph_id]
-    row = index[(index["method"] == method) & (index["graph_id"] == graph_id)].iloc[0]
-    trace = Trace.load(row["path"])
 
-    step = playback(trace, f"{method}/{graph_id}")
-    total = len(trace.steps)
-    if step >= total:
-        report = st.success if trace.outcome.get("success") else st.error
-        report(outcome_text(graph, trace))
+    def load(name: str) -> Trace:
+        row = index[(index["method"] == name) & (index["graph_id"] == graph_id)].iloc[0]
+        return Trace.load(row["path"])
+
+    trace = load(method)
+    other = load(compare_with) if compare_with else None
+    # In compare mode one control drives both episodes; the shorter one waits at its end.
+    total = max(len(trace.steps), len(other.steps)) if other else len(trace.steps)
+    step = playback(total, f"{method}/{compare_with}/{graph_id}")
+
+    if other is not None:
+        compare_view(graph, [trace, other], step, show_truth)
     else:
-        st.caption(
-            f"Step {step} of {total}. Ground truth is {'shown' if show_truth else 'hidden'}."
-        )
-
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Control flow graph")
-        st.graphviz_chart(cfg_dot(graph, trace, step, show_truth), width="stretch")
-        st.caption(
-            "Orange: current node. Blue: visited, darker with more visits. Bold outline: on the "
-            "path stack. Green or red: declared, correct or wrong. Purple double outline: ground "
-            "truth. Dashed edge: loop back edge."
-        )
-    with right:
-        st.subheader("Source")
-        st.markdown(source_html(graph, trace, step, show_truth), unsafe_allow_html=True)
-
-    st.subheader("Steps")
-    table_column, policy_column = st.columns([3, 2])
-    with table_column:
-        st.dataframe(step_table(graph, trace, step), hide_index=True, width="stretch")
-    with policy_column:
-        upcoming = trace.steps[step] if step < total else None
-        if upcoming is not None and upcoming.probs is not None:
-            labels = action_labels(graph, upcoming.node, len(upcoming.probs))
-            chart = pd.DataFrame({"action": labels, "probability": upcoming.probs})
-            if upcoming.mask is not None:
-                chart = chart[pd.Series(upcoming.mask)]  # hide actions that were not available
-            st.caption(f"Policy at this step (value estimate {upcoming.value:.3f})")
-            st.bar_chart(chart, x="action", y="probability", horizontal=True)
-        elif upcoming is not None:
-            st.caption("This method has no action probabilities to show.")
+        single_view(graph, trace, step, show_truth)
 
     if st.session_state.get("playing"):
         if step >= total:
