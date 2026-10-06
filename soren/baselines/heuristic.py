@@ -62,15 +62,16 @@ class HeuristicScorer:
         self.lexicon = lexicon
         self._columns = [TIER_L_NAMES.index(name) for name in self.weights]
         self._weights = np.array(list(self.weights.values()), dtype=np.float64)
-        self._cache: dict[str, np.ndarray] = {}
+        # Keyed by object identity: different datasets may reuse sample ids.
+        self._cache: dict[int, tuple[GraphRecord, np.ndarray]] = {}
 
     def scores(self, graph: GraphRecord) -> np.ndarray:
-        cached = self._cache.get(graph.sample_id)
-        if cached is None:
+        entry = self._cache.get(id(graph))
+        if entry is None:
             features = featurize(graph, "L", self.lexicon)[:, self._columns]
-            cached = (features @ self._weights) / self._weights.sum()
-            self._cache[graph.sample_id] = cached
-        return cached
+            entry = (graph, (features @ self._weights) / self._weights.sum())
+            self._cache[id(graph)] = entry
+        return entry[1]
 
 
 class ThresholdRule:

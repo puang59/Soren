@@ -15,10 +15,12 @@ from __future__ import annotations
 import argparse
 import re
 from dataclasses import replace
+from pathlib import Path
 
 from soren.agents.searcher import PolicySearcher
 from soren.agents.train import load_model
 from soren.baselines.heuristic import BASELINE_FACTORIES, HeuristicScorer, make_baseline
+from soren.baselines.node_classifier import NodeClassifier
 from soren.config import load_config, load_yaml
 from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
@@ -81,6 +83,16 @@ def main(argv: list[str] | None = None) -> None:
             make_baseline(name, env_config, reward_config, scorer, thresholds[name])
             for name in args.methods
         ]
+        # A tuned classifier, if there is one, gives a second Protocol B variant.
+        settings = load_yaml(args.eval_config).get("protocol_b") or {}
+        path = settings.get("classifier_path")
+        if settings.get("classifier") and path and Path(path).is_file():
+            classifier = NodeClassifier.load(path)
+            searchers += [
+                make_baseline(name, env_config, reward_config, classifier, threshold)
+                for name, threshold in settings["classifier"].items()
+                if name in args.methods
+            ]
     seed_overrides = {}
     for index, path in enumerate(args.checkpoints):
         seed_overrides[len(searchers)] = checkpoint_seed(path, index)

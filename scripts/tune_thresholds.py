@@ -25,6 +25,7 @@ from soren.baselines.heuristic import (
     best_threshold,
     threshold_curve,
 )
+from soren.baselines.node_classifier import NodeClassifier
 from soren.config import load_config, load_yaml
 from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     parser.add_argument("--env-config", default="configs/env.yaml")
     parser.add_argument("--eval-config", default="configs/eval.yaml")
+    parser.add_argument("--classifier", help="tune for this trained node classifier instead")
     parser.add_argument("--curve", help="write the full threshold curve to this CSV file")
     parser.add_argument(
         "--write-config", action="store_true", help="store the thresholds in --eval-config"
@@ -50,7 +52,7 @@ def main(argv: list[str] | None = None) -> None:
     env_config = load_config(EnvConfig, args.env_config, section="env")
     reward_config = load_config(RewardConfig, args.env_config, section="reward")
     graphs = read_jsonl(args.graphs)
-    scorer = HeuristicScorer()
+    scorer = NodeClassifier.load(args.classifier) if args.classifier else HeuristicScorer()
     candidates = np.round(np.linspace(0.05, 0.95, args.steps), 4)
 
     curves = []
@@ -76,6 +78,8 @@ def main(argv: list[str] | None = None) -> None:
         config = load_yaml(args.eval_config)
         config.setdefault("protocol_b", {})[scorer.name] = chosen
         config["protocol_b"]["tuned_on"] = str(args.graphs)
+        if args.classifier:
+            config["protocol_b"]["classifier_path"] = str(args.classifier)
         Path(args.eval_config).write_text(yaml.safe_dump(config, sort_keys=False))
         print(f"wrote thresholds to {args.eval_config}")
 
