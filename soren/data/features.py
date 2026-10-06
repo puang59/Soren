@@ -7,6 +7,8 @@ ground-truth labels.
 Tier S (structural) is the state described in the project description: node kind, in/out
 degree and position in the control flow.
 
+Tier E (embedding) appends a 32-dimensional embedding of each statement's text to Tier L.
+
 Tier L (lexical, the default) appends cheap per-statement flags to Tier S: which kind of API
 is called, and which operators and identifiers appear. Operator flags read the Joern operator
 names stored on the node (``Node.ops``) when the node has any, and fall back to regular
@@ -277,12 +279,40 @@ def _tier_l(graph: GraphRecord, lexicon: Lexicon) -> np.ndarray:
     return np.concatenate([structural, lexical], axis=1)
 
 
+# ----------------------------------------------------------------------------- Tier E
+
+EMBED_KEY = "embed"
+EMBED_DIM = 32
+TIER_E_NAMES: tuple[str, ...] = (*TIER_L_NAMES, *(f"embed_{i}" for i in range(EMBED_DIM)))
+
+
+def _tier_e(graph: GraphRecord, lexicon: Lexicon) -> np.ndarray:
+    """Tier L plus the statement embeddings stored on the record.
+
+    Embeddings come from a pretrained model and are computed offline by
+    ``scripts/07_embed_statements.py``; a record without them cannot be featurized at Tier E.
+    """
+    stored = graph.features.get(EMBED_KEY)
+    if stored is None:
+        raise ValueError(
+            f"{graph.sample_id}: no statement embeddings; run scripts/07_embed_statements.py"
+        )
+    embeddings = np.asarray(stored, dtype=np.float32)
+    if embeddings.shape != (graph.num_nodes, EMBED_DIM):
+        raise ValueError(
+            f"{graph.sample_id}: embeddings have shape {embeddings.shape}, "
+            f"expected {(graph.num_nodes, EMBED_DIM)}"
+        )
+    return np.concatenate([_tier_l(graph, lexicon), embeddings], axis=1)
+
+
 # --------------------------------------------------------------------------- registry
 
 _Featurizer = Callable[[GraphRecord, Lexicon], np.ndarray]
 _TIERS: dict[str, tuple[tuple[str, ...], _Featurizer]] = {
     "S": (TIER_S_NAMES, _tier_s),
     "L": (TIER_L_NAMES, _tier_l),
+    "E": (TIER_E_NAMES, _tier_e),
 }
 
 
