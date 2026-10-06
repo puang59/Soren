@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--train", default="data/processed/graphs_train.jsonl")
     parser.add_argument("--val", default="data/processed/graphs_val.jsonl")
     parser.add_argument("--out", default="runs/classifier/model.pt")
-    parser.add_argument("--tier", default="L", choices=["S", "L"])
+    parser.add_argument("--tier", default="L", choices=["S", "L", "E"])
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
