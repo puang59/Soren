@@ -49,7 +49,12 @@ def test_build_graphs_stages_and_reasons():
     records, attrition, reasons = build_graphs(filtered(), METHODS)
     assert [step["step"] for step in attrition] == list(STAGES)
     assert [step["rows"] for step in attrition] == [8, 7, 7, 6, 5, 5]
-    assert reasons == {"low_coverage": 1, "no_flaw_on_node": 1, "not_parsed": 1}
+    assert reasons == {
+        "low_coverage": 1,
+        "no_flaw_on_node": 1,
+        "not_parsed": 1,
+        "rewritten_wide_nodes": 0,
+    }
     assert [r.sample_id for r in records] == [
         "nested_loops",
         "multi_line",
@@ -103,7 +108,7 @@ def test_text_mismatch_drops_the_sample_not_the_run():
     frame = filtered().iloc[:2].copy()
     frame.at[0, "flaw_line_indices"] = [8]  # points one line past the recorded text
     records, _, reasons = build_graphs(frame, METHODS)
-    assert reasons == {"text_mismatch": 1}
+    assert reasons == {"text_mismatch": 1, "rewritten_wide_nodes": 0}
     assert [r.sample_id for r in records] == ["multi_line"]
 
 

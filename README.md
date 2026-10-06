@@ -56,6 +56,9 @@ filtering (1,251 and 327). The numbers behind that choice are in
 python scripts/01_filter_bigvul.py --input data/raw/bigvul_hf
 python scripts/02_write_sources.py
 scripts/03_run_joern.sh
+python scripts/04_build_graphs.py
+python scripts/05_split.py
+python scripts/06_graph_stats.py
 ```
 
 1. `01_filter_bigvul.py` keeps vulnerable functions of the CWEs in `configs/data.yaml` that
@@ -67,6 +70,20 @@ scripts/03_run_joern.sh
 3. `03_run_joern.sh` parses each batch with Joern and exports its control flow graphs to
    `data/interim/joern/batch_XXXX.jsonl`. Finished batches are skipped on a rerun; failed ones
    are listed in `failed_batches.txt`. Set `JOBS` to change how many batches run at once.
+
+4. `04_build_graphs.py` collapses each Joern CFG to one node per source line, drops badly
+   parsed functions, maps the flaw lines to nodes and writes `data/processed/graphs_all.jsonl`.
+   Every drop is counted by reason in `attrition.json`.
+5. `05_split.py` splits by fixing commit into `graphs_{train,val,test}.jsonl` (80/10/10) and
+   fails if a commit or a function body would be shared between splits.
+6. `06_graph_stats.py` writes size, branching and label statistics for the training split to
+   `data/processed/stats.json`.
+
+To check the result by eye, `python scripts/inspect_graph.py --graphs
+data/processed/graphs_train.jsonl --sample 5` prints graphs next to their source.
+
+On the Hugging Face mirror this yields 1,278 graphs from the 1,578 filtered functions:
+1,023 for training, 128 for validation and 127 for test.
 
 ### Joern
 
