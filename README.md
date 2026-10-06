@@ -49,14 +49,8 @@ instead: `python -m http.server -d web-app 8000`, then open `http://localhost:80
   heuristic-first). **Compare with** shows a second method beside the first.
 - **▶ / ◀** step one action, **Play** runs the episode, and the slider scrubs through it.
   Keys: `←` `→` step, `Space` play, `Home` restart.
-- **Show ground truth and the fix** outlines the statements the fix changed and opens a
-  "Why this function is vulnerable" section: the CVE, the CWE, the fixing commit with its
-  message, and the diff of what the fix removed and added. Leave it off until the method has
-  declared.
-- When an episode ends, the page explains the outcome in plain sentences: which line was
-  declared, which lines the fix actually changed, whether the method ever stood on one of
-  them, and what the features see on the lines involved. These are built from the recorded
-  trace and the dataset, not generated.
+- **Show ground truth** outlines the statement the fix changed. Leave it off until the method
+  has declared.
 
 The page is black and white; colour is used only for the state of the walk, as the key under
 the controls explains. Under the graph it lists the actions taken so far and, for the agent,
