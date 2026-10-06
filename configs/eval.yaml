@@ -1,2 +1,17 @@
-# Placeholder; populated by the eval issue.
-{}
+protocol_b:
+  heuristic:
+    bfs: 0.1
+    dfs: 0.1
+    heuristic_first: 0.1
+    line_order: 0.1
+    random_order: 0.1
+    random_walk: 0.05
+  tuned_on: data/processed/graphs_val.jsonl
+  classifier:
+    bfs: 0.55
+    dfs: 0.15
+    heuristic_first: 0.65
+    line_order: 0.65
+    random_order: 0.55
+    random_walk: 0.15
+  classifier_path: runs/classifier/model.pt
