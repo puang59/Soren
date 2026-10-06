@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soren: architecture, reinforcement learning design, and code</title>
+<link rel="stylesheet" href="vendor/highlight.css">
+<style>
+:root {
+  --ink: #000; --paper: #fff; --muted: #555; --faint: #d9d9d9; --wash: #f5f5f5;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); max-width: 1320px; margin: 0 auto; }
+nav {
+  position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+  padding: 28px 20px; border-right: 1px solid var(--ink); font-size: 14px;
+}
+nav strong { display: block; margin-bottom: 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+nav a { display: block; padding: 4px 8px; color: var(--ink); text-decoration: none; border-left: 3px solid transparent; }
+nav a.active { border-left-color: var(--ink); font-weight: 600; }
+@media (hover: hover) and (pointer: fine) { nav a:hover { background: var(--ink); color: var(--paper); } }
+main { min-width: 0; padding: 36px 48px 96px; }
+main > :first-child { margin-top: 0; }
+h1 { font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 12px; }
+h2 { font-size: 22px; margin: 56px 0 12px; padding-top: 20px; border-top: 1px solid var(--ink); }
+h3 { font-size: 17px; margin: 32px 0 8px; }
+p, ul, ol, table, pre, blockquote { margin: 0 0 16px; }
+p, li { max-width: 78ch; }
+a { color: var(--ink); }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+hr { border: 0; border-top: 1px solid var(--faint); margin: 28px 0; }
+code { font: 0.88em var(--mono); background: var(--wash); padding: 1px 5px; }
+pre { border: 1px solid var(--ink); overflow-x: auto; }
+pre code { display: block; padding: 14px 16px; background: var(--paper); font-size: 13px; line-height: 1.55; }
+pre code.hljs { background: var(--paper); }
+.code-lang {
+  display: block; padding: 3px 10px; border-bottom: 1px solid var(--ink);
+  font: 11px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+}
+table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; font-size: 14.5px; }
+th, td { padding: 6px 12px; border: 1px solid var(--faint); text-align: left; vertical-align: top; }
+th { border-bottom: 1px solid var(--ink); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+blockquote { padding: 10px 16px; border-left: 6px solid var(--ink); background: var(--wash); }
+blockquote p { margin: 0; }
+.diagram { margin: 0 0 20px; padding: 16px; border: 1px solid var(--ink); overflow-x: auto; text-align: center; }
+.diagram svg { max-width: 100%; height: auto; }
+.diagram.failed { text-align: left; white-space: pre; font: 13px var(--mono); }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--ink); }
+  main { padding: 24px 20px 64px; }
+}
+@media print { nav { display: none; } .layout { display: block; } main { padding: 0; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav aria-label="Contents"><strong>Contents</strong><div id="toc"></div></nav>
+  <main id="content"></main>
+</div>
+
+<script type="text/markdown" id="source"># Soren: architecture, reinforcement learning design, and code
+
+A reinforcement learning agent that localizes a vulnerability inside a C or C++ function by
+walking the function's control flow graph. This document explains how the system is built,
+exactly how it uses reinforcement learning, where each piece lives in the code, and what is
+new about it.
+
+All file paths are relative to the repository root. Line numbers refer to the `main` branch.
+
+---
+
+## Contents
+
+1. [What the system does](#1-what-the-system-does)
+2. [Architecture](#2-architecture)
+3. [The problem as a Markov decision process](#3-the-problem-as-a-markov-decision-process)
+4. [Mapping to reinforcement learning concepts](#4-mapping-to-reinforcement-learning-concepts)
+5. [The algorithm: PPO with action masking](#5-the-algorithm-ppo-with-action-masking)
+6. [The neural network](#6-the-neural-network)
+7. [How training runs](#7-how-training-runs)
+8. [A real episode, step by step](#8-a-real-episode-step-by-step)
+9. [The other algorithms](#9-the-other-algorithms)
+10. [Related deep RL algorithms and why PPO](#10-related-deep-rl-algorithms-and-why-ppo)
+11. [Results](#11-results)
+12. [Innovation, with evidence](#12-innovation-with-evidence)
+13. [Code map](#13-code-map)
+
+---
+
+## 1. What the system does
+
+**Input:** a function that is known to contain a vulnerability.
+**Output:** the statement the agent believes is the vulnerable one, plus the path it took to
+get there.
+
+Existing detectors (graph neural networks, Transformers) read a whole function in one pass and
+answer "vulnerable or not". They do not say where, and they do not model a search. Soren
+treats localization as **sequential decision-making**: an agent stands on one statement, sees
+only that statement and the ones directly reachable from it, and repeatedly chooses to move,
+go back, or declare.
+
+---
+
+## 2. Architecture
+
+The system has two halves joined by one data format. The offline half turns source code into
+graphs. The online half is the reinforcement learning loop.
+
+```mermaid
+flowchart TD
+    subgraph OFFLINE["Offline data pipeline"]
+        A["BigVul dataset<br/>217,007 functions"] --> B["Filter<br/>vulnerable, CWE-119/125,<br/>has a usable fix"]
+        B --> C["Write each function<br/>as .c and .cpp"]
+        C --> D["Joern<br/>expression-level CFG"]
+        D --> E["Collapse to one node<br/>per source line"]
+        E --> F["Align fix lines to nodes<br/>(ground truth)"]
+        F --> G["Split by fixing commit<br/>1,023 / 128 / 127"]
+    end
+
+    G --> H[("GraphRecord files<br/>train / val / test")]
+
+    subgraph ONLINE["Reinforcement learning"]
+        H --> I["CFGNavEnv<br/>Gymnasium environment"]
+        I <-->|"observation, reward<br/>action"| J["MaskablePPO agent<br/>actor + critic networks"]
+        H --> K["Baselines<br/>DFS, BFS, line order,<br/>heuristic-first"]
+    end
+
+    J --> L["Evaluation harness<br/>metrics, confidence intervals"]
+    K --> L
+    L --> M["Web visualizer<br/>replays each walk"]
+```
+
+| Layer | What it does | Where |
+|---|---|---|
+| Data pipeline | BigVul to line-level control flow graphs with labels | `soren/data/`, `scripts/01`–`06` |
+| Shared record | One function: nodes, edges, vulnerable nodes, source | `soren/data/schema.py` |
+| Features | 30 numbers per statement | `soren/data/features.py` |
+| Environment | The world the agent acts in | `soren/env/cfg_nav_env.py` |
+| Reward | Points for each outcome | `soren/env/rewards.py` |
+| Agent | PPO configuration, training loop, callbacks | `soren/agents/` |
+| Baselines | Non-learning search methods | `soren/baselines/` |
+| Evaluation | Metrics, statistics, final test run | `soren/eval/`, `scripts/final_evaluation.py` |
+| Visualizer | Static web page replaying episodes | `web-app/` |
+
+**Design principle.** Everything after the data pipeline reads only `GraphRecord`. That let
+the environment and agent be built and validated on synthetic graphs before any real data
+existed (`soren/data/synthetic.py`).
+
+---
+
+## 3. The problem as a Markov decision process
+
+A reinforcement learning problem is defined by states, actions, transitions, rewards and a
+termination rule. Here is each one for Soren.
+
+```mermaid
+flowchart LR
+    S["State s<br/>where the agent stands,<br/>what it has visited"] -->|"observe 248 numbers"| P["Policy π(a | s)<br/>actor network"]
+    P -->|"action a<br/>move / backtrack / declare"| E["Environment<br/>CFGNavEnv.step()"]
+    E -->|"reward r"| P
+    E -->|"next state s'"| S
+```
+
+### State and observation
+
+The true state is the agent's position, its path so far, and which statements it has visited.
+The agent does not see the whole graph. It receives an **observation of 248 numbers**, all
+scaled to between 0 and 1:
+
+| Part | Size | Content |
+|---|---|---|
+| Current statement | 30 | Its features (see below) |
+| Current statement, episode info | 2 | How often visited; already declared here |
+| Six successor slots | 6 × 33 = 198 | For each next statement: a "slot used" flag, its 30 features, visited before, is a loop back edge |
+| Backtrack target | 13 | Whether backtracking is possible, and what kind of statement it leads to |
+| Episode context | 5 | Fraction of step budget used, fraction of graph visited, path depth, graph size, declarations left |
+
+Because the agent sees only one step ahead, this is strictly a **partially observable** MDP.
+The "visited" flags act as a small memory so the policy does not need to be recurrent.
+
+The 30 per-statement features (`soren/data/features.py`):
+
+- **Structural (17):** statement kind as a one-hot (assignment, call, branch, loop, switch,
+  return, jump, declaration, other, entry, exit), in-degree, out-degree, depth from the entry,
+  inside a loop, is a loop header, relative line position.
+- **Lexical (13):** calls any function, calls a dangerous API (`memcpy`, `strcpy`, ...),
+  allocates, frees, indexes an array, dereferences a pointer, pointer arithmetic, arithmetic,
+  comparison, `sizeof`, cast, mentions a length-like variable, token count.
+
+Building the observation, `soren/env/cfg_nav_env.py:279`:
+
+```python
+# 3. Successor slots: [valid, features, visited_before, is_back_edge].
+for slot, succ in enumerate(graph.successors(self.node)):
+    base = pos + slot * self._slot_dim
+    obs[base] = 1.0
+    obs[base + 1 : base + 1 + f] = feats[succ]
+    obs[base + 1 + f] = float(self.visits[succ] > 0)
+    obs[base + 2 + f] = float(graph.is_back_edge(self.node, succ))
+```
+
+### Actions
+
+Eight discrete actions:
+
+| Index | Action | Meaning |
+|---|---|---|
+| 0–5 | `MOVE_i` | Go to the i-th statement reachable from here |
+| 6 | `BACKTRACK` | Return to the statement the agent came from |
+| 7 | `DECLARE` | Say "this statement is the vulnerability" |
+
+A statement rarely has six successors, so most actions are invalid most of the time. The
+environment reports which are valid, `soren/env/cfg_nav_env.py:138`:
+
+```python
+def action_masks(self) -> np.ndarray:
+    """Boolean mask over actions; ``True`` marks a valid action in the current state."""
+    mask = np.zeros(self.config.k + 2, dtype=bool)
+    if self._done:
+        return mask
+    mask[: len(self.graph.successors(self.node))] = True
+    mask[self.backtrack_action] = self.config.allow_backtrack and bool(self.stack)
+    mask[self.declare_action] = (
+        self.graph.nodes[self.node].kind not in ("ENTRY", "EXIT")
+        and self.node not in self.declared
+        and self.declares_left > 0
+    )
+    return mask
+```
+
+### Transitions
+
+Deterministic: a move goes exactly where the edge points. The core of
+`CFGNavEnv.step()`, `soren/env/cfg_nav_env.py:204`:
+
+```python
+elif action < self.config.k:                       # MOVE_i
+    target = graph.successors(prev)[action]
+    self.stack.append(prev)
+    event = StepEvent(graph, "move", prev, target, revisit=bool(self.visits[target]))
+    self._arrive(target)
+elif action == self.backtrack_action:              # BACKTRACK
+    target = self.stack.pop()
+    event = StepEvent(graph, "backtrack", prev, target)
+    self._arrive(target)
+else:                                              # DECLARE
+    correct = prev in graph.vuln_set
+    self.declared.append(prev)
+    self.declares_left -= 1
+    event = StepEvent(graph, "declare", prev, prev, correct=correct)
+    if correct:
+        self.is_success = True
+        terminated, self.end_reason = True, "correct"
+    elif self.declares_left == 0:
+        terminated, self.end_reason = True, "wrong_declare"
+```
+
+### Reward
+
+| Event | Reward |
+|---|---|
+| Any move or backtrack | −0.01 |
+| Moving onto an already visited statement | a further −0.02 |
+| Declaring a vulnerable statement | **+1.0** |
+| Declaring any other statement | **−0.5** |
+| Step budget exhausted | −0.5 |
+
+The whole reward function, `soren/env/rewards.py:53`:
+
+```python
+def base_reward(event: StepEvent, cfg: RewardConfig) -> float:
+    """The unshaped reward for one step."""
+    reward = 0.0
+    if event.action == "declare":
+        reward += cfg.correct if event.correct else cfg.wrong
+    else:
+        reward += cfg.step
+        if event.action == "move" and event.revisit:
+            reward += cfg.revisit
+    if event.timeout or event.dead_end:
+        reward += cfg.timeout
+    return reward
+```
+
+The values are in `configs/env.yaml`. The small step cost makes short searches preferable;
+the large gap between +1.0 and −0.5 makes a correct declaration the goal.
+
+### Termination
+
+An episode ends when the agent declares, or after `min(200, 4 × number of statements)` steps.
+
+---
+
+## 4. Mapping to reinforcement learning concepts
+
+| Concept | In Soren |
+|---|---|
+| **Agent** | The PPO policy that walks the graph |
+| **Environment** | `CFGNavEnv`: one vulnerable function as a control flow graph |
+| **State s** | Current statement, path taken, visited statements |
+| **Observation** | 248 numbers describing the current statement and its successors |
+| **Action a** | Move to a successor, backtrack, or declare (8 discrete actions) |
+| **Reward r** | −0.01 per step, +1.0 correct, −0.5 wrong or out of steps |
+| **Episode** | One attempt on one function, from ENTRY to a declaration or timeout |
+| **Sequence of actions** | The walk itself, for example move, move, declare |
+| **Return G** | Sum of rewards in an episode; about +0.98 for a quick correct answer |
+| **Policy π(a \| s)** | The **actor network**: gives a probability to each action |
+| **State value V(s)** | The **critic network**: predicts the return from this state onward |
+| **Action value Q(s, a)** | **Not learned directly.** PPO uses the *advantage* A(s, a) = Q(s, a) − V(s), estimated from sampled returns with GAE |
+| **Advantage A(s, a)** | How much better an action turned out than the critic expected; this is what pushes the policy |
+| **Model of the environment** | None. The method is **model-free** |
+| **Planning / MCTS** | **Not used.** See section 10 |
+| **Deep RL** | Yes: policy and value function are neural networks trained by gradient descent |
+| **Exploration** | Sampling from the policy during training, encouraged by an entropy bonus |
+| **On-policy / off-policy** | On-policy: each batch of experience is used for one update and discarded |
+
+---
+
+## 5. The algorithm: PPO with action masking
+
+**Proximal Policy Optimization (PPO)** is a policy-gradient, actor-critic method. It keeps two
+functions:
+
+- the **actor** π_θ(a | s), which chooses actions;
+- the **critic** V_φ(s), which estimates how good a state is.
+
+Soren uses `MaskablePPO` from the `sb3-contrib` library, which is PPO plus support for
+invalid-action masks.
+
+### Step 1: collect experience
+
+Run the current policy in 16 environments for 512 steps each. That gives 8,192 transitions
+(s, a, r, s′), each with the critic's V(s) and the probability the actor gave the action.
+
+### Step 2: estimate advantages with GAE
+
+For each transition compute the one-step surprise (the TD error):
+
+```
+δ_t = r_t + γ · V(s_{t+1}) − V(s_t)
+```
+
+Then the Generalized Advantage Estimate is a discounted sum of these:
+
+```
+A_t = δ_t + (γλ) · δ_{t+1} + (γλ)² · δ_{t+2} + ...        with γ = 0.99, λ = 0.95
+```
+
+This is where V(s) and Q(s, a) meet: `A_t` estimates Q(s_t, a_t) − V(s_t) without ever
+learning Q. The value target for the critic is `R_t = A_t + V(s_t)`.
+
+### Step 3: update both networks by gradient descent
+
+The probability ratio between the new and old policy:
+
+```
+ρ_t(θ) = π_θ(a_t | s_t) / π_θ_old(a_t | s_t)
+```
+
+**Policy (actor) loss**, the clipped surrogate objective:
+
+```
+L_policy = − mean( min( ρ_t · A_t ,  clip(ρ_t, 1 − ε, 1 + ε) · A_t ) )        ε = 0.2
+```
+
+The clip is what "proximal" means: if an update would change an action's probability by more
+than 20%, the extra gain is ignored. That stops one batch of lucky episodes from wrecking the
+policy.
+
+**Value (critic) loss:**
+
+```
+L_value = mean( (V_φ(s_t) − R_t)² )
+```
+
+**Entropy bonus**, which rewards the policy for staying uncertain and therefore exploring:
+
+```
+H = mean( entropy of π_θ(· | s_t) )
+```
+
+**Total loss minimised:**
+
+```
+L = L_policy + 0.5 · L_value − 0.01 · H
+```
+
+Gradients of `L` are computed by backpropagation through both networks, clipped to a norm of
+0.5, and applied with the **Adam** optimiser.
+
+### Action masking
+
+Before sampling, the logits of invalid actions are set to a very large negative number, so
+their probability is zero. The agent can never try to move to a successor that does not
+exist. Without this the agent would waste most of its early training discovering which of the
+8 actions are legal in each state.
+
+### Where this is configured
+
+`soren/agents/ppo.py:87`:
+
+```python
+def build_model(venv, cfg, seed=0, tensorboard_log=None) -> MaskablePPO:
+    return MaskablePPO(
+        "MlpPolicy",
+        venv,
+        n_steps=cfg.n_steps,                 # 512 steps per environment per rollout
+        batch_size=cfg.batch_size,           # 512 transitions per gradient step
+        n_epochs=cfg.n_epochs,               # 10 passes over each rollout
+        learning_rate=learning_rate_schedule(cfg),
+        gamma=cfg.gamma,                     # 0.99
+        gae_lambda=cfg.gae_lambda,           # 0.95
+        clip_range=cfg.clip_range,           # 0.2
+        ent_coef=cfg.ent_coef,               # 0.01
+        vf_coef=cfg.vf_coef,                 # 0.5
+        max_grad_norm=cfg.max_grad_norm,     # 0.5
+        policy_kwargs={
+            "net_arch": {"pi": list(cfg.net_arch), "vf": list(cfg.net_arch)},
+            "activation_fn": _ACTIVATIONS[cfg.activation],
+        },
+        ...
+    )
+```
+
+The values come from `configs/ppo.yaml`. (The comments above are added here for explanation.)
+
+---
+
+## 6. The neural network
+
+Two separate multilayer perceptrons with no shared layers. This is the actual structure of the
+trained checkpoint.
+
+```mermaid
+flowchart LR
+    O["Observation<br/>248 numbers"]
+
+    subgraph ACTOR["Actor (policy network)"]
+        direction LR
+        A1["Linear 248 → 256<br/>tanh"] --> A2["Linear 256 → 256<br/>tanh"] --> A3["Linear 256 → 8<br/>logits"]
+    end
+
+    subgraph CRITIC["Critic (value network)"]
+        direction LR
+        C1["Linear 248 → 256<br/>tanh"] --> C2["Linear 256 → 256<br/>tanh"] --> C3["Linear 256 → 1"]
+    end
+
+    O --> A1
+    O --> C1
+    A3 --> M["Mask invalid actions<br/>then softmax"]
+    M --> PI["π(a | s)<br/>8 action probabilities"]
+    C3 --> V["V(s)<br/>one number"]
+```
+
+| Layer | Shape | Parameters |
+|---|---|---|
+| Actor hidden 1 | 248 → 256 | 63,744 |
+| Actor hidden 2 | 256 → 256 | 65,792 |
+| Actor output | 256 → 8 | 2,056 |
+| Critic hidden 1 | 248 → 256 | 63,744 |
+| Critic hidden 2 | 256 → 256 | 65,792 |
+| Critic output | 256 → 1 | 257 |
+| **Total** | | **261,385** |
+
+- **Input:** the 248-number observation.
+- **Activation:** tanh after each hidden layer.
+- **Actor output:** 8 logits. After masking and softmax they are the probabilities
+  π(a | s). During training an action is *sampled* from them; at test time the most probable
+  valid action is taken.
+- **Critic output:** a single number, V(s).
+- **Optimiser:** Adam, learning rate 3 × 10⁻⁴ decaying linearly to zero over training.
+
+Why a plain MLP and not a graph neural network: the observation is already a fixed-length
+vector describing the local neighbourhood, so no graph encoder is needed for the agent to act.
+A GNN over the whole function is listed as future work.
+
+---
+
+## 7. How training runs
+
+```mermaid
+flowchart TD
+    A["Start: random actor and critic"] --> B["Rollout<br/>16 environments × 512 steps<br/>= 8,192 transitions"]
+    B --> C["Compute advantages A_t (GAE)<br/>and value targets R_t"]
+    C --> D["10 epochs over the rollout<br/>in minibatches of 512<br/>= 160 gradient steps"]
+    D --> E{"50,000 more<br/>timesteps done?"}
+    E -->|yes| F["Evaluate on all 128<br/>validation functions"]
+    F --> G{"Best success<br/>rate so far?"}
+    G -->|yes| H["Save best_model.zip"]
+    G -->|no| I["Continue"]
+    H --> I
+    E -->|no| I
+    I --> J{"1,000,000<br/>timesteps reached?"}
+    J -->|no| B
+    J -->|yes| K["Done: evaluate the best<br/>checkpoint once on the test set"]
+```
+
+### The numbers
+
+| Quantity | Value |
+|---|---|
+| Training functions | 1,023 |
+| Parallel environments | 16 |
+| Steps per environment per rollout | 512 |
+| Transitions per rollout | 8,192 |
+| Passes over each rollout | 10 |
+| Minibatch size | 512 |
+| Gradient steps per rollout | 160 |
+| Total timesteps | 1,007,616 (123 rollouts) |
+| Total gradient steps | about 19,700 |
+| Validation evaluations | 21 (every 50,000 timesteps) |
+| Wall-clock time | about 4 minutes on a laptop CPU |
+| Seeds | 5 independent runs |
+
+### The training loop in code
+
+`soren/agents/train.py:70`:
+
+```python
+venv = make_vec_env(train_graphs, env_config, reward_config, ppo_config, seed, curriculum)
+try:
+    model = build_model(
+        venv, ppo_config, seed, tensorboard_log=str(run_dir / "tb") if tensorboard else None
+    )
+    validation = ValidationCallback(
+        val_graphs, env_config, reward_config, ppo_config.eval_freq, run_dir
+    )
+    callbacks = CallbackList([validation, DiagnosticsCallback(env_config.k)])
+    model.learn(total_timesteps=ppo_config.total_timesteps, callback=callbacks)
+```
+
+Each of the 16 environments samples a random training function at the start of every episode
+(`CFGNavEnv.reset`, `soren/env/cfg_nav_env.py:178`). Rewards are normalised by a running
+estimate during training (`VecNormalize`, `soren/agents/ppo.py:59`); observations are already
+in [0, 1].
+
+### Choosing the checkpoint
+
+Training does not simply keep the last network. Every 50,000 timesteps the policy is run once
+on every validation function, and the best one is saved,
+`soren/agents/callbacks.py:46`:
+
+```python
+key = (metrics["success_rate"], -metrics["nodes_inspected"])
+if self.best_key is None or key > self.best_key:
+    self.best_key = key
+    self.best_metrics = metrics
+    self.model.save(self.run_dir / "best_model")
+```
+
+The test set plays no part in this. It is evaluated once, at the end.
+
+### Running it
+
+```bash
+python scripts/run_arm.py --group final --name base --seed 0 --timesteps 1000000
+```
+
+---
+
+## 8. A real episode, step by step
+
+Function `bigvul_048191` from the miniupnp project, a test function the agent never trained
+on. It is a buffer overflow: `memcpy` copies `l` bytes with no bounds check.
+
+```c
+1  void IGDstartelt(void * d, const char * name, int l)
+2  {
+3      struct IGDdatas * datas = (struct IGDdatas *)d;
+4     memcpy( datas->cureltname, name, l);          <-- the fix changed this line
+5      datas->cureltname[l] = '\0';
+6      datas->level++;
+...
+```
+
+The trained agent's sequence of actions, with its own probabilities:
+
+| Step | Standing on | What the actor output | Action taken | Reward |
+|---|---|---|---|---|
+| 1 | ENTRY | move to line 3: 100% | move | −0.01 |
+| 2 | line 3 | move to line 4: 99.99%, backtrack: 0.01%, declare: 0% | move | −0.01 |
+| 3 | line 4 (`memcpy`) | **declare: 98.6%**, backtrack: 1.2%, move to line 5: 0.1% | **declare** | **+1.0** |
+
+Return for the episode: −0.01 − 0.01 + 1.0 = **+0.98**. Three actions, 3 of 11 statements
+inspected, correct.
+
+What this shows:
+
+- **Sequence of actions:** move, move, declare.
+- **Policy π(a | s):** the percentages in the third column are the actor's output at each step.
+- **Value V(s):** the critic's estimate rose as the agent approached the `memcpy`, from 0.63 at
+  line 3 to 1.71 at line 4. (These are in normalised reward units, which is why they can
+  exceed 1.)
+- **Learned behaviour:** on a plain assignment it keeps moving; on a call to a dangerous API
+  it switches almost entirely to declaring.
+
+You can replay this episode in the web visualizer: open `web-app/index.html` and select
+`bigvul_048191`.
+
+---
+
+## 9. The other algorithms
+
+These are the non-learning methods the agent is compared against. None of them use rewards,
+gradients or a neural network.
+
+| Method | How it chooses the next statement | Code |
+|---|---|---|
+| **Depth-first search (DFS)** | Follow the first unvisited successor as deep as possible; back up at dead ends | `soren/baselines/dfs.py:11` |
+| **Breadth-first search (BFS)** | Everything one step from the entry, then two steps, and so on | `soren/baselines/bfs.py` |
+| **Random walk** | A uniformly random valid move or backtrack | `soren/baselines/random_walk.py` |
+| **Line order** | Top of the function to the bottom | `soren/baselines/reference.py` |
+| **Random order** | A random permutation of all statements | `soren/baselines/reference.py` |
+| **Heuristic-first** | Best-first search on a hand-written suspicion score | `soren/baselines/heuristic.py:88` |
+
+The whole of DFS's decision rule, `soren/baselines/dfs.py:20`:
+
+```python
+def choose(self, env: CFGNavEnv, rng: np.random.Generator) -> int | None:
+    for slot, succ in enumerate(env.graph.successors(env.node)):
+        if env.visits[succ] == 0:
+            return slot
+    return env.backtrack_action if env.stack else None
+```
+
+### Two ways of scoring them
+
+A search order has no built-in way to say "this is the one", so two protocols are used.
+
+- **Protocol A (oracle stop).** The method is stopped automatically the moment it stands on a
+  vulnerable statement (`oracle_stop`, `soren/baselines/base.py:38`). It cannot be wrong. This
+  measures only how many statements it had to look at.
+- **Protocol B (must declare).** The method declares at the first statement whose suspicion
+  score reaches a threshold (`ThresholdRule`, `soren/baselines/heuristic.py:77`). It can be
+  wrong, exactly like the agent. **This is the fair comparison.**
+
+The suspicion score is a weighted sum of the lexical flags
+(`HeuristicScorer`, `soren/baselines/heuristic.py:48`): dangerous call 3, array subscript 2,
+pointer arithmetic 2, pointer dereference 1, allocation 1, length-like variable 1,
+arithmetic 0.5.
+
+### A supervised reference
+
+A small classifier (`soren/baselines/node_classifier.py`) is trained on the same 30 features
+to predict whether a statement is vulnerable, and ranks every statement of a function at once.
+It is not a search method. It measures how much the features can say when nothing is hidden.
+
+---
+
+## 10. Related deep RL algorithms and why PPO
+
+| Algorithm | What it learns | Why it was or was not used |
+|---|---|---|
+| **PPO** (used) | Policy π(a \| s) and value V(s) | Stable, on-policy, and a version with invalid-action masking exists |
+| **DQN** | Action value Q(s, a); acts by picking the largest Q | Planned as a comparison. The standard implementation has no action masking, so it needs a custom version. Not implemented |
+| **A2C / A3C** | Policy and value, like PPO | Same family; PPO's clipped objective is more stable and reuses each batch for several updates |
+| **TRPO** | Policy with a hard limit on how far each update moves | PPO is its simpler successor with comparable results |
+| **REINFORCE** | Policy only, from whole-episode returns | High variance; the critic in PPO reduces it |
+| **MCTS / AlphaZero** | Plans by simulating futures in a search tree | See below |
+
+### Why not Monte Carlo Tree Search
+
+MCTS needs to simulate "what happens if I take this action" and get a reward back. Soren's
+transitions are easy to simulate (the graph is known), but the **reward is not available at
+test time**: whether a declaration is correct is exactly what we are trying to find out. A
+tree search would need a learned value function to stand in for it, which is the AlphaZero
+recipe. That is a possible extension; the simpler model-free method was the right first step.
+
+### V(s) versus Q(s, a) in this project
+
+- **V(s)** is learned: it is the critic network's output.
+- **Q(s, a)** is never represented. PPO only needs the *advantage* A(s, a) = Q(s, a) − V(s),
+  and estimates it from the rewards actually collected (GAE, section 5).
+- A DQN agent would do the opposite: learn Q(s, a) for all 8 actions and act greedily, with no
+  separate policy network.
+
+---
+
+## 11. Results
+
+### On synthetic graphs (does the method work at all?)
+
+Graphs generated by `soren/data/synthetic.py`, with one planted vulnerable statement.
+
+| Condition | PPO success | Best possible | PPO statements inspected | DFS statements inspected |
+|---|---|---|---|---|
+| Vulnerable statement clearly marked | 98.1% | 100% | 11.8 | 13.7 |
+| Marker removed (nothing to learn) | 6.0% | 7.5% | 3.2 | 13.7 |
+
+With a clear signal the agent finds the statement almost every time and looks at 14% fewer
+statements than DFS. With the signal removed it falls to chance, which shows it is using the
+features and nothing else. Source: `experiments/synthetic-validation.md`.
+
+### On real BigVul functions (127 held-out test functions)
+
+One declaration per function. Protocol B for the baselines.
+
+| Method | Functions localized | 95% interval |
+|---|---|---|
+| DFS, stop at first suspicious statement | 27.6% | 19.7–35.4% |
+| Line order, same rule | 27.6% | 19.7–35.4% |
+| Heuristic-first, same rule | 26.8% | 19.7–34.6% |
+| BFS, same rule | 25.2% | 18.1–33.1% |
+| **PPO agent (5 seeds)** | **21.1%** | 15.3–27.4% |
+| Random guess | 12.5% | |
+
+The agent is clearly above a random guess. It is slightly below the simple baselines, and that
+gap is not statistically significant on 127 functions (p = 0.14). With three declarations
+allowed it reaches 40.7%, with five 48.0%. Source: `experiments/test/README.md`.
+
+### Why it does not do better on real code
+
+The classifier that sees every statement at once ranks a vulnerable one first only 23% of the
+time, and adding CodeBERT embeddings does not change that
+(`experiments/feature-signal.md`). The limit is what one statement's features reveal, not the
+search policy: whether `memcpy(dst, src, len)` is a bug depends on whether `len` was checked
+earlier, which no per-statement feature captures.
+
+---
+
+## 12. Innovation, with evidence
+
+Each claim below points to something in the repository that can be checked.
+
+### 1. Vulnerability localization reformulated as graph navigation
+
+The usual formulation is classification: score every statement or the whole function in one
+pass. Soren models it as a sequential decision process on the control flow graph, which makes
+it a reinforcement learning problem and makes the reasoning replayable.
+
+- **Evidence it works:** 98.1% success on synthetic graphs while inspecting 14% fewer
+  statements than DFS (`experiments/synthetic-validation.md`).
+- **Evidence it is interpretable:** every episode is a recorded sequence of actions with the
+  policy's probabilities, replayable in `web-app/`.
+- **Where:** `soren/env/cfg_nav_env.py`.
+
+We did not find prior work that trains an agent to walk a control flow graph to localize a
+vulnerability, but this was not a systematic survey.
+
+### 2. A Gymnasium environment for walking program graphs
+
+A reusable environment with a fixed-size action space over variable-degree graphs,
+invalid-action masking, a one-hop observation, a declare budget, and potential-based reward
+shaping as an option.
+
+- **Evidence:** passes Gymnasium's own `check_env`; 25 tests in `tests/test_env.py`, including
+  one that checks the mask against an independent rule over every action sequence up to
+  length 7.
+- **Where:** `soren/env/`.
+
+### 3. Two evaluation protocols that expose an unfair comparison
+
+Comparing a learned agent with BFS and DFS is misleading if the baselines are simply stopped
+when they reach the answer. Soren reports both that protocol and one where baselines must
+declare.
+
+- **Evidence:** the same baselines score 99–100% under the oracle stop and 25–28% when they
+  must declare (`experiments/test/README.md`). The fair numbers are the second set.
+- **Where:** `soren/baselines/base.py:38`, `soren/baselines/heuristic.py:77`.
+
+### 4. Controls that caught a bias in our own results
+
+Two controls check that the agent is not reading the answer from somewhere it should not.
+One of them exposed a flaw in how validation results are usually reported.
+
+- **Evidence:** permuting statement IDs leaves every checkpoint's score exactly unchanged.
+  Agents trained on shuffled labels score chance (13.1% against 13.6%) on fresh labels, but
+  17.7% on the labels their checkpoint was selected on. Picking the best of ten evaluations on
+  128 functions inflates a score by about 4.5 points
+  (`experiments/leakage/README.md`).
+- **Consequence:** only the untouched test set is quoted as the result.
+- **Where:** `soren/data/transform.py` (`shuffle_labels`, `permute_node_ids`).
+
+### 5. A measured explanation of the limit
+
+Instead of stopping at "the agent does not beat the baselines", the project measures why.
+
+- **Evidence:** a classifier with full visibility reaches 23.2% top-1 with lexical features
+  and 23.2% with CodeBERT embeddings added; a sweep of eight reward and hyperparameter
+  settings all land within noise of each other
+  (`experiments/feature-signal.md`, `experiments/sweep/README.md`).
+- **Conclusion:** the bottleneck is the per-statement representation, not the RL algorithm.
+
+### 6. Parsing C and C++ together
+
+BigVul mixes C and C++, and the parser (Joern) chooses its grammar by file extension. A C++
+method parsed as C yields nothing.
+
+- **Evidence:** parsing as C alone recovers 65% of functions; as C++ alone 70%; writing each
+  function both ways and keeping whichever parses recovers **97%** (1,525 of 1,578).
+- **Where:** `soren/data/sources.py`, `soren/data/cfg_builder.py:306` (`select_method`).
+
+### 7. Line-level control flow graphs with verified labels
+
+Joern produces one node per expression. Soren collapses these to one node per source line,
+merges multi-line statements, and checks every label against the source text so that an
+off-by-one index cannot silently label the wrong line.
+
+- **Evidence:** golden tests assert exact edges for hand-written C snippets parsed by real
+  Joern (`tests/test_cfg_builder.py`, `tests/fixtures/joern/`).
+- **Where:** `soren/data/cfg_builder.py:116`, `soren/data/labels.py`.
+
+---
+
+## 13. Code map
+
+### Reinforcement learning core
+
+| What | File | Line |
+|---|---|---|
+| Environment class | `soren/env/cfg_nav_env.py` | 77 |
+| Environment settings (`EnvConfig`) | `soren/env/cfg_nav_env.py` | 45 |
+| Valid-action mask | `soren/env/cfg_nav_env.py` | 138 |
+| Start of an episode (`reset`) | `soren/env/cfg_nav_env.py` | 178 |
+| One step: transition and termination | `soren/env/cfg_nav_env.py` | 204 |
+| Building the 248-number observation | `soren/env/cfg_nav_env.py` | 279 |
+| Reward values (`RewardConfig`) | `soren/env/rewards.py` | 38 |
+| Reward function | `soren/env/rewards.py` | 53 |
+| Optional potential-based shaping | `soren/env/rewards.py` | 102 |
+| PPO hyperparameters (`PPOConfig`) | `soren/agents/ppo.py` | 22 |
+| Learning-rate schedule | `soren/agents/ppo.py` | 53 |
+| Parallel environments | `soren/agents/ppo.py` | 59 |
+| Building the PPO model and networks | `soren/agents/ppo.py` | 87 |
+| Training loop | `soren/agents/train.py` | 32 |
+| Validation and best-checkpoint selection | `soren/agents/callbacks.py` | 21 |
+| Running a trained policy | `soren/agents/searcher.py` | 20 |
+| Hyperparameter values | `configs/ppo.yaml` | |
+| Environment and reward values | `configs/env.yaml` | |
+
+### Features and data
+
+| What | File | Line |
+|---|---|---|
+| Graph record format | `soren/data/schema.py` | |
+| Structural features | `soren/data/features.py` | 43 |
+| Lexical features | `soren/data/features.py` | 245 |
+| Joern export to line-level CFG | `soren/data/cfg_builder.py` | 116 |
+| Choosing the C or C++ parse | `soren/data/cfg_builder.py` | 306 |
+| Label alignment | `soren/data/labels.py` | |
+| Commit-level split | `soren/data/split.py` | |
+| Synthetic graph generator | `soren/data/synthetic.py` | |
+
+### Baselines and evaluation
+
+| What | File | Line |
+|---|---|---|
+| Oracle stop (Protocol A) | `soren/baselines/base.py` | 38 |
+| DFS | `soren/baselines/dfs.py` | 11 |
+| Suspicion score | `soren/baselines/heuristic.py` | 48 |
+| Threshold stop (Protocol B) | `soren/baselines/heuristic.py` | 77 |
+| Heuristic-first search | `soren/baselines/heuristic.py` | 88 |
+| Node classifier | `soren/baselines/node_classifier.py` | |
+| Metrics | `soren/eval/metrics.py` | |
+| Confidence intervals and tests | `soren/eval/stats.py` | |
+| Final test-set evaluation | `scripts/final_evaluation.py` | |
+
+### Experiment records
+
+| What | File |
+|---|---|
+| Synthetic validation | `experiments/synthetic-validation.md` |
+| First runs on real data | `experiments/bigvul-first-runs.md` |
+| How much the features say | `experiments/feature-signal.md` |
+| Hyperparameter sweep | `experiments/sweep/README.md` |
+| Five-seed final runs | `experiments/final/README.md` |
+| Ablations | `experiments/ablations/README.md` |
+| Leakage controls | `experiments/leakage/README.md` |
+| Test-set results | `experiments/test/README.md` |
+| Figures | `experiments/figures/` |
+| Full report | `docs/report.md` |
+</script>
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/mermaid.min.js"></script>
+<script>
+// Heading ids in the same style GitHub uses, so the document's own contents links work.
+const slug = (text) => text.toLowerCase().replace(/<[^>]+>/g, "").replace(/[^\w\- ]/g, "").trim().replace(/ /g, "-");
+
+const renderer = new marked.Renderer();
+renderer.heading = (text, level, raw) => `<h${level} id="${slug(raw)}">${text}</h${level}>\n`;
+renderer.code = (code, lang) => {
+  const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (lang === "mermaid") return `<div class="diagram mermaid">${escape(code)}</div>`;
+  const known = lang && hljs.getLanguage(lang);
+  const html = known ? hljs.highlight(code, { language: lang }).value : escape(code);
+  const label = lang ? `<span class="code-lang">${lang}</span>` : "";
+  return `<pre>${label}<code class="hljs">${html}</code></pre>`;
+};
+
+const content = document.getElementById("content");
+content.innerHTML = marked.parse(document.getElementById("source").textContent, { renderer, gfm: true });
+
+// The sidebar replaces the inline contents list.
+const inline = document.getElementById("contents");
+if (inline) {
+  let node = inline.nextElementSibling;
+  while (node && node.tagName !== "H2") { const next = node.nextElementSibling; node.remove(); node = next; }
+  inline.remove();
+}
+const toc = document.getElementById("toc");
+const sections = [...content.querySelectorAll("h2")];
+for (const heading of sections) {
+  const link = document.createElement("a");
+  link.href = `#${heading.id}`;
+  link.textContent = heading.textContent;
+  toc.append(link);
+}
+const links = [...toc.querySelectorAll("a")];
+const observer = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    links.forEach((a) => a.classList.toggle("active", a.hash === `#${entry.target.id}`));
+  }
+}, { rootMargin: "0px 0px -75% 0px" });
+sections.forEach((heading) => observer.observe(heading));
+
+mermaid.initialize({
+  startOnLoad: false, theme: "base", securityLevel: "loose",
+  themeVariables: {
+    fontFamily: "-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif", fontSize: "14px",
+    primaryColor: "#ffffff", primaryBorderColor: "#000000", primaryTextColor: "#000000",
+    lineColor: "#000000", secondaryColor: "#f5f5f5", tertiaryColor: "#ffffff",
+    clusterBkg: "#fafafa", clusterBorder: "#000000", edgeLabelBackground: "#ffffff",
+  },
+});
+mermaid.run({ querySelector: ".mermaid" }).catch((error) => {
+  console.error(error);
+  document.querySelectorAll(".mermaid:not([data-processed])").forEach((el) => el.classList.add("failed"));
+});
+</script>
+</body>
+</html>
