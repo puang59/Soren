@@ -4,10 +4,12 @@ from pathlib import Path
 import pytest
 
 from soren.data.cfg_builder import (
+    MIN_COVERAGE,
     CfgBuildError,
     LineCfg,
     build_line_cfg,
     load_joern_methods,
+    rejection_reason,
     select_method,
 )
 from soren.data.features import TIER_L_NAMES, featurize
@@ -145,9 +147,8 @@ def test_nodes_carry_what_the_featurizers_need():
     assert feats[cfg.line_to_node[8], TIER_L_NAMES.index("arith_op")] == 1.0
 
 
-# multi_line needs statements merged across lines and macro_heavy is a parse failure; both
-# are covered with the span handling.
-SIMPLE = [n for n in METHODS if n not in ("macro_heavy", "method", "multi_line")]
+# macro_heavy is a parse failure and has its own test.
+SIMPLE = [n for n in METHODS if n not in ("macro_heavy", "method")]
 
 
 @pytest.mark.parametrize("name", SIMPLE)
@@ -209,3 +210,83 @@ def test_fixture_matches_the_snippet_sources():
         json.loads(line)["file"] for line in (FIXTURES / "snippets.jsonl").read_text().splitlines()
     }
     assert files == {p.name for p in (FIXTURES / "src").iterdir()}
+
+
+def test_multi_line_statements_become_one_node():
+    cfg = build("multi_line")
+    # The condition spans lines 4-6, memcpy lines 7-9 and the return lines 11-12.
+    assert line_edges(cfg) == {("ENTRY", 3), (3, 4), (4, 7), (4, 11), (7, 11), (11, "EXIT")}
+    assert kinds(cfg) == {3: "ASSIGN", 4: "BRANCH", 7: "CALL", 11: "RETURN"}
+    assert len(cfg.nodes) == 6
+    call = cfg.nodes[cfg.line_to_node[7]]
+    assert call.code == "memcpy(dst, src, len);" and call.calls == ["memcpy"]
+    assert cfg.nodes[cfg.line_to_node[4]].code == "if (len > 0 && dst != 0 && src != 0) {"
+    assert cfg.nodes[cfg.line_to_node[11]].calls == ["check"]
+
+
+def test_every_line_of_a_statement_maps_to_its_node():
+    cfg = build("multi_line")
+    lookup = cfg.line_to_node
+    assert lookup[7] == lookup[8] == lookup[9]
+    assert lookup[4] == lookup[5] == lookup[6]
+    assert lookup[11] == lookup[12]
+    assert 10 not in lookup and 1 not in lookup  # a closing brace, and the signature
+    # A flaw line in the middle of the call lands on the call's node.
+    assert cfg.nodes[lookup[8]].line == 7
+
+
+def test_coverage_is_high_for_well_parsed_functions():
+    for name in SIMPLE:
+        cfg = build(name)
+        assert cfg.coverage >= 0.8, name
+        assert rejection_reason(cfg) is None
+    # Only an `else` line is unaccounted for here.
+    assert build("straight").coverage == 1.0
+    assert build("if_else").coverage == pytest.approx(6 / 7)
+
+
+def test_macro_heavy_function_is_rejected_for_low_coverage():
+    """Most of the body sits in an inactive #ifdef branch, which Joern leaves out."""
+    cfg = build("macro_heavy")
+    assert [n.kind for n in cfg.nodes] == ["ENTRY", "RETURN", "EXIT"]
+    assert cfg.coverage == pytest.approx(2 / 10)  # the signature and the return, of ten lines
+    assert cfg.coverage < MIN_COVERAGE
+    assert rejection_reason(cfg) == "low_coverage"
+    assert rejection_reason(cfg, min_coverage=0.1) is None
+
+
+def test_broken_control_flow_is_rejected():
+    method = {
+        "file": "x.c", "name": "f", "line": 1, "line_end": 4,
+        "nodes": [
+            [1, "METHOD", 1, "", ""], [9, "METHOD_RETURN", 1, "", ""],
+            [2, "CALL", 2, "<operator>.assignment", "a = 1"],
+            [4, "RETURN", 3, "", "return a;"],
+        ],
+        "edges": [[1, 2], [2, 4]],  # nothing reaches METHOD_RETURN
+        "controls": [], "stmts": [],
+    }  # fmt: skip
+    cfg = build_line_cfg(method, "int f() {\n  a = 1;\n  return a;\n}\n")
+    assert rejection_reason(cfg) == "exit_unreachable"
+
+
+def test_nested_spans_keep_the_inner_statement():
+    method = {
+        "file": "x.c", "name": "f", "line": 1, "line_end": 8,
+        "nodes": [
+            [1, "METHOD", 1, "", ""], [9, "METHOD_RETURN", 1, "", ""],
+            [2, "CALL", 2, "outer", "outer(...)"],
+            [3, "CALL", 4, "inner", "inner(...)"],
+            [4, "CALL", 5, "<operator>.addition", "a + b"],
+            [5, "RETURN", 7, "", "return;"],
+        ],
+        "edges": [[1, 2], [2, 3], [3, 4], [4, 5], [5, 9]],
+        "controls": [],
+        "stmts": [["CALL", 2, 6], ["CALL", 4, 5], ["RETURN", 7, 7]],
+    }  # fmt: skip
+    source = "void f() {\n  outer(\n    x,\n    inner(a +\n      b),\n    y);\n  return;\n}\n"
+    cfg = build_line_cfg(method, source)
+    lookup = cfg.line_to_node
+    assert lookup[2] == lookup[3] == lookup[6]
+    assert lookup[4] == lookup[5] != lookup[2]
+    assert [n.line for n in cfg.nodes[1:-1]] == [2, 4, 7]
