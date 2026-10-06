@@ -4,23 +4,22 @@ The demo runs offline from saved traces: it needs no training, no Joern and no n
 
 ## Before the demo
 
-Generate traces for the test graphs once (about a minute):
+Start the visualizer in live mode. It runs each method on the spot, so there is nothing to
+generate beforehand:
 
 ```bash
-python scripts/make_traces.py --graphs data/processed/graphs_test.jsonl \
-    --methods dfs line_order heuristic_first \
-    --checkpoints runs/final/base/seed1/best_model.zip \
-    --out runs/demo_test/traces
-streamlit run soren/viz/app.py -- --graphs data/processed/graphs_test.jsonl \
-    --traces runs/demo_test/traces
+streamlit run soren/viz/app.py -- --live --graphs data/processed/graphs_test.jsonl
 ```
+
+As a fallback that needs no browser, the same walk-through works in a terminal with
+`python -m soren.demo --step` and `python -m soren.demo --failure --step`.
 
 Pick two functions in the sidebar ahead of time, both under about 30 nodes so the graph fits
 on screen, and note their ids:
 
-- **A success:** method `ppo`, outcome filter `success`.
-- **A failure:** method `ppo`, outcome filter `failure`, ideally one where the agent declares
-  a statement with a dangerous call that is not the flaw.
+- **A success:** `python -m soren.demo --list` shows which functions the agent gets right.
+- **A failure:** ideally one where the agent declares a statement with a dangerous call that
+  is not the flaw.
 
 With the checkpoint above (`runs/final/base/seed1`), functions that fit these descriptions
 include `bigvul_005074` and `bigvul_048191` (successes) and `bigvul_015735` and
@@ -69,7 +68,8 @@ The next step is giving statements context: data flow, or a graph encoder."
 
 ## If something goes wrong
 
-- **The app shows "Traces directory not found":** rerun `make_traces.py`; the path is the
-  `--traces` argument.
+- **The browser demo will not start:** use the terminal demo, `python -m soren.demo --step`.
+- **"Checkpoint not found" in the sidebar:** set the path to a trained `best_model.zip`; the
+  baselines still work without one.
 - **A graph is too large to read:** lower the "Graph size" slider's upper end.
 - **No time for the live walk-through:** show steps 4, 6 and 7 only.
