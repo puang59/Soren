@@ -24,7 +24,7 @@
     <select id="compare"></select>
   </label>
   <label class="check">
-    <input type="checkbox" id="truth"> Show ground truth and the fix
+    <input type="checkbox" id="truth"> Show ground truth
   </label>
 </section>
 
@@ -51,20 +51,7 @@
   <li><span class="swatch bad"></span>declared, wrong</li>
   <li><span class="swatch truth"></span>ground truth</li>
   <li><span class="swatch stack"></span>on the path back</li>
-  <li><span class="swatch removed"></span>removed by the fix</li>
-  <li><span class="swatch added"></span>added by the fix</li>
 </ul>
-
-<section id="why" hidden aria-label="Why this function is vulnerable">
-  <h2>Why this function is vulnerable</h2>
-  <p class="why-meta"></p>
-  <p class="why-message"></p>
-  <h3>What the fix changed</h3>
-  <ol class="diff"></ol>
-  <p class="why-note">The ground truth is the set of lines this fix removed or rewrote in the
-  vulnerable version (marked −). Lines marked + are what replaced them. That is a proxy: a fix
-  can also touch lines that were not themselves the defect.</p>
-</section>
 
 <main id="panels"></main>
 
@@ -79,7 +66,6 @@
     <h2></h2>
     <p class="status"></p>
     <p class="outcome" hidden></p>
-    <ul class="explanation" hidden></ul>
     <div class="views">
       <div class="graph"><svg role="img" aria-label="Control flow graph"></svg></div>
       <ol class="source"></ol>

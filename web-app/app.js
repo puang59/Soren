@@ -204,17 +204,6 @@ function renderPanel(panel, step, showTruth) {
       : `✘ Missed${reason}`;
   }
 
-  // Once the episode is over, say why it ended that way. Before that it would give the answer away.
-  const explanation = root.querySelector(".explanation");
-  explanation.hidden = !done;
-  if (done && !explanation.childElementCount) {
-    explanation.append(...trace.explanation.map((sentence) => {
-      const li = document.createElement("li");
-      li.textContent = sentence;
-      return li;
-    }));
-  }
-
   const upcoming = done ? null : trace.steps[at];
   const policy = root.querySelector(".policy");
   policy.hidden = !(upcoming && upcoming.options);
@@ -261,58 +250,7 @@ function totalSteps() {
   return Math.max(...panels.map((p) => p.trace.steps.length));
 }
 
-// The CVE, the fixing commit and its diff: shown with the ground truth, never before.
-function renderWhy(episode) {
-  const why = $("why");
-  why.hidden = !ui.truth.checked;
-  if (why.hidden || why.dataset.id === episode.id) return;
-  why.dataset.id = episode.id;
-
-  const meta = why.querySelector(".why-meta");
-  meta.replaceChildren();
-  const link = (text, url) => {
-    if (!url) return document.createTextNode(text);
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = text;
-    return a;
-  };
-  const parts = [];
-  if (episode.cve) parts.push(link(episode.cve, episode.cve_url));
-  parts.push(document.createTextNode(`${episode.cwe}${episode.cwe_name ? `: ${episode.cwe_name}` : ""}`));
-  if (episode.commit) parts.push(link(`fixing commit ${episode.commit.slice(0, 10)}`, episode.commit_url));
-  parts.forEach((part, i) => {
-    if (i) meta.append(" · ");
-    meta.append(part);
-  });
-
-  const message = why.querySelector(".why-message");
-  message.textContent = episode.commit_message
-    ? `Commit message:\n${episode.commit_message}`
-    : "The dataset has no commit message for this fix.";
-
-  const sign = { removed: "−", added: "+", context: " ", gap: "" };
-  why.querySelector(".diff").replaceChildren(...episode.fix.map((row) => {
-    const li = document.createElement("li");
-    li.className = row.kind;
-    if (row.kind === "gap") { li.textContent = "⋯"; return li; }
-    const no = document.createElement("span");
-    no.className = "no";
-    no.textContent = row.line ?? "";
-    const mark = document.createElement("span");
-    mark.className = "sign";
-    mark.textContent = sign[row.kind];
-    const code = document.createElement("span");
-    code.textContent = row.text.replace(/\t/g, "    ") || " ";
-    li.append(no, mark, code);
-    return li;
-  }));
-}
-
 function render() {
-  if (panels.length) renderWhy(panels[0].episode);
   for (const panel of panels) renderPanel(panel, state.step, ui.truth.checked);
   ui.step.value = state.step;
   ui.stepLabel.textContent = `${state.step} / ${totalSteps()}`;
