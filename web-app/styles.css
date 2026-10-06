@@ -11,6 +11,8 @@
   --ok: #34c759;
   --bad: #ff5a52;
   --truth: #7a1fff;
+  --removed: #ffd9d6;
+  --added: #d3f5db;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -111,6 +113,27 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 .swatch.bad { background: var(--bad); }
 .swatch.truth { border: 3px solid var(--truth); }
 .swatch.stack { border-width: 3px; }
+.swatch.removed { background: var(--removed); }
+.swatch.added { background: var(--added); }
+
+/* --------------------------------------------------------------------- why */
+
+#why { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--rule); border-left: 10px solid var(--truth); }
+#why h3 { margin-top: 14px; }
+.why-meta { margin: 6px 0 0; }
+.why-meta a { color: var(--ink); }
+.why-message { margin: 8px 0 0; max-width: 90ch; white-space: pre-wrap; font: 13px/1.5 var(--mono); }
+.why-note { margin: 10px 0 0; max-width: 90ch; color: var(--muted); font-size: 13px; }
+.diff { margin: 0; padding: 0; border: 1px solid var(--rule); list-style: none; overflow: auto; font: 12.5px/1.55 var(--mono); }
+.diff li { display: flex; white-space: pre; }
+.diff .no { flex: 0 0 3.2em; padding-right: 8px; text-align: right; color: var(--muted); user-select: none; }
+.diff .sign { flex: 0 0 1.4em; font-weight: 700; }
+.diff li.removed { background: var(--removed); }
+.diff li.added { background: var(--added); }
+.diff li.gap { justify-content: center; color: var(--muted); border-top: 1px dashed var(--faint); border-bottom: 1px dashed var(--faint); }
+
+.explanation { margin: 0 0 12px; padding: 10px 14px 10px 30px; border: 1px solid var(--rule); max-width: 100ch; }
+.explanation li + li { margin-top: 4px; }
 
 /* ------------------------------------------------------------------ panels */
 
