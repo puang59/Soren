@@ -1,13 +1,15 @@
-DEFINE_HANDLER(my_handler)
+int macro_heavy(struct ctx *c, char *buf, int n)
 {
-    BEGIN_TABLE(tbl)
-    ENTRY(1, foo)
-    ENTRY(2, bar)
-    ENTRY(3, baz)
-    ENTRY(4, qux)
-    END_TABLE
-    FOR_EACH_ITEM(it, tbl)
-    PROCESS(it)
-    END_FOR
+#ifdef FEATURE_NOT_BUILT
+    int os_style = -1;
+    if (n > 4) {
+        os_style = buf[0];
+        copy_name(c, buf, n);
+    }
+    if (os_style < 0)
+        report(c, "unknown");
+    c->style = os_style;
+    flush(c);
+#endif
     return 0;
 }

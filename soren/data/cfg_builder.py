@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from soren.data.filtering import code_line_mask
 from soren.data.graph_utils import bfs_depths, find_back_edges, nodes_in_cycles
 from soren.data.schema import GraphRecord, Node, resolve_kind
 
@@ -51,7 +52,13 @@ class LineCfg:
     back_edges: list[tuple[int, int]]
     source_lines: list[str]
     line_to_node: dict[int, int] = field(default_factory=dict)
-    """Source line -> id of the node that covers it. ENTRY and EXIT are not included."""
+    """Source line -> id of the node that covers it, including every line of a multi-line
+    statement. ENTRY and EXIT are not included."""
+    coverage: float = 1.0
+    """Share of the function's code lines that the parse accounts for: lines covered by a
+    node, declarations without an initialiser, and the function header. A low value means
+    much of the function is missing from the graph, typically because it sits in a
+    preprocessor branch that Joern treats as inactive, or behind macros it cannot expand."""
 
     @property
     def entry(self) -> int:
@@ -81,8 +88,29 @@ def _is_assignment(name: str) -> bool:
 
 
 def _canonical_lines(method: dict[str, Any]) -> dict[int, int]:
-    """Map each source line to the line of the node that represents it (identity for now)."""
-    return {}
+    """Map every line of a multi-line statement or control header to its first line.
+
+    ``memcpy(dst,\n src,\n len);`` puts Joern nodes on three lines; they are one statement and
+    must be one node. The same goes for a condition that wraps over several lines. Larger spans
+    are applied first so that a statement nested inside another keeps its own first line.
+    """
+    spans = [(first, last) for _label, first, last in method["stmts"] if last > first > 0]
+    spans += [(first, last) for _t, _own, first, last in method["controls"] if last > first > 0]
+    canonical: dict[int, int] = {}
+    for first, last in sorted(spans, key=lambda span: span[0] - span[1]):
+        for line in range(first, last + 1):
+            canonical[line] = first
+    return canonical
+
+
+def _signature_lines(source_lines: list[str], start: int) -> set[int]:
+    """Lines of the function header: from ``start`` to the line that opens the body."""
+    lines = set()
+    for number in range(max(start, 1), len(source_lines) + 1):
+        lines.add(number)
+        if "{" in source_lines[number - 1]:
+            break
+    return lines
 
 
 def build_line_cfg(method: dict[str, Any], source: str) -> LineCfg:
@@ -181,8 +209,27 @@ def build_line_cfg(method: dict[str, Any], source: str) -> LineCfg:
                 edges.add((origin, target))
     edge_list = sorted(edges)
 
+    # Every line of a merged statement points at the statement's node.
+    span_end = {line: line for line in lines}
+    line_to_node = dict(node_of_line)
+    for line, first in canonical.items():
+        if first in node_of_line:
+            line_to_node[line] = node_of_line[first]
+            span_end[first] = max(span_end[first], line)
+
     def text(line: int) -> str:
-        return source_lines[line - 1].strip() if 0 < line <= len(source_lines) else ""
+        parts = [source_lines[n - 1].strip() for n in range(line, span_end[line] + 1)]
+        return " ".join(part for part in parts if part) if line <= len(source_lines) else ""
+
+    accounted = set(line_to_node) | _signature_lines(source_lines, method["line"])
+    accounted |= {first for label, first, _last in method["stmts"] if label == "LOCAL"}
+    # Preprocessor directives are never statements, so they do not count either way.
+    code_lines = [
+        n + 1
+        for n, is_code in enumerate(code_line_mask(source))
+        if is_code and not source_lines[n].lstrip().startswith("#")
+    ]
+    coverage = sum(line in accounted for line in code_lines) / max(len(code_lines), 1)
 
     num_nodes = len(lines) + 2
     depths = bfs_depths(num_nodes, edge_list, 0)
@@ -210,8 +257,25 @@ def build_line_cfg(method: dict[str, Any], source: str) -> LineCfg:
         edges=edge_list,
         back_edges=find_back_edges(num_nodes, edge_list, 0),
         source_lines=source_lines,
-        line_to_node=dict(node_of_line),
+        line_to_node=line_to_node,
+        coverage=coverage,
     )
+
+
+MIN_COVERAGE = 0.6
+
+
+def rejection_reason(cfg: LineCfg, min_coverage: float = MIN_COVERAGE) -> str | None:
+    """Why a graph should be dropped, or ``None`` if it is usable.
+
+    * ``low_coverage``: the parse accounts for too few of the function's code lines
+    * ``exit_unreachable``: no path from ENTRY to EXIT, so the control flow is broken
+    """
+    if cfg.coverage < min_coverage:
+        return "low_coverage"
+    if cfg.nodes[cfg.exit].depth < 0:
+        return "exit_unreachable"
+    return None
 
 
 # ---------------------------------------------------------------------- loading exports
