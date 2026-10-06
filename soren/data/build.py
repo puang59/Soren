@@ -20,6 +20,7 @@ from soren.data.cfg_builder import (
 from soren.data.features import featurize
 from soren.data.labels import align_flaw_lines
 from soren.data.schema import GraphRecord, SchemaError
+from soren.data.transform import limit_out_degree, max_out_degree
 
 STAGES: tuple[str, ...] = (
     "filtered_functions",
@@ -37,6 +38,9 @@ class BuildConfig:
     max_nodes: int = 300
     """Bounds on the number of CFG nodes, ENTRY and EXIT included."""
     min_coverage: float = MIN_COVERAGE
+    max_out_degree: int = 6
+    """Nodes with more successors are rewritten as a chain of dispatch nodes. Keep this equal
+    to the environment's ``k``."""
 
 
 def build_graphs(
@@ -47,12 +51,14 @@ def build_graphs(
     """Turn every filtered function into a :class:`GraphRecord`, or record why it was dropped.
 
     Returns ``(records, attrition, reasons)``. ``attrition`` lists the functions surviving
-    each stage, in the order of :data:`STAGES`; ``reasons`` counts the drops by cause.
+    each stage, in the order of :data:`STAGES`; ``reasons`` counts the drops by cause, plus
+    ``rewritten_wide_nodes``, the number of kept graphs whose wide nodes were chained.
     """
     config = config or BuildConfig()
     survived = Counter({"filtered_functions": len(filtered)})
     reasons: Counter[str] = Counter()
     records: list[GraphRecord] = []
+    rewritten = 0
 
     for row in filtered.itertuples(index=False):
         method = select_method(methods.get(row.sample_id, {}))
@@ -95,6 +101,9 @@ def build_graphs(
                 commit_id=row.commit_id,
                 cwe=row.cwe,
             )
+            if max_out_degree(record) > config.max_out_degree:
+                record = limit_out_degree(record, config.max_out_degree)
+                rewritten += 1
         except SchemaError:
             reasons["invalid_record"] += 1
             continue
@@ -107,4 +116,7 @@ def build_graphs(
         records.append(record)
 
     attrition = [{"step": stage, "rows": int(survived[stage])} for stage in STAGES]
-    return records, attrition, dict(sorted(reasons.items()))
+    summary = dict(sorted(reasons.items()))
+    # Not a drop: how many kept graphs had a node too wide for the environment.
+    summary["rewritten_wide_nodes"] = rewritten
+    return records, attrition, summary

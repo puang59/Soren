@@ -43,14 +43,17 @@ def main(argv: list[str] | None = None) -> None:
     attrition_path = Path(args.attrition)
     log = json.loads(attrition_path.read_text()) if attrition_path.exists() else {}
     log["graph_steps"] = steps
-    log["graph_drop_reasons"] = reasons
+    log["graph_drop_reasons"] = {k: v for k, v in reasons.items() if k != "rewritten_wide_nodes"}
+    log["graphs_rewritten_for_out_degree"] = reasons.get("rewritten_wide_nodes", 0)
     attrition_path.parent.mkdir(parents=True, exist_ok=True)
     attrition_path.write_text(json.dumps(log, indent=2))
 
     width = max(len(str(step["step"])) for step in steps)
     for step in steps:
         print(f"{step['step']:<{width}}  {step['rows']:>6}")
+    rewritten = reasons.pop("rewritten_wide_nodes", 0)
     print("dropped:", ", ".join(f"{name} {n}" for name, n in reasons.items()) or "nothing")
+    print(f"rewrote {rewritten} graphs with nodes wider than {config.max_out_degree} successors")
     print(f"wrote {count} graphs to {args.output}")
 
 

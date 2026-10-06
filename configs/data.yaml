@@ -9,6 +9,7 @@ graphs:
   min_nodes: 5             # CFG nodes, ENTRY and EXIT included
   max_nodes: 300
   min_coverage: 0.6        # share of code lines the parse must account for
+  max_out_degree: 6        # wider nodes (large switches) become dispatch chains; equals env k
 
 split:
   train: 0.8
