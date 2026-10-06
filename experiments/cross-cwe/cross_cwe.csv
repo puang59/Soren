@@ -1,0 +1,5 @@
+arm,seeds,success_rate,success_std,localization_accuracy,train_success,nodes_inspected_success,actions_success,cumulative_reward
+train125_val119,3,0.1914,0.0093,0.1914,0.4297,3.8093,3.8093,-0.2382
+train119_val119,3,0.1584,0.0162,0.1584,0.5456,3.8185,3.8601,-0.3012
+train125_val125,3,0.1481,0.0,0.1481,0.393,3.0,4.3333,-0.3062
+train119_val125,3,0.1235,0.0175,0.1235,0.4778,3.7222,4.0556,-0.3357
