@@ -25,7 +25,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from soren.data.features import feature_dim, featurize
+from soren.data.features import feature_dim, feature_names, featurize
 from soren.data.schema import NODE_KINDS, GraphRecord
 from soren.env.rewards import RewardConfig, RewardModel, StepEvent
 
@@ -53,6 +53,8 @@ class EnvConfig:
     feature_tier: str = "L"
     allow_backtrack: bool = True
     strict_masks: bool = True
+    masked_features: tuple[str, ...] = ()
+    """Names of node features to zero out, for ablations (for example ``("rel_line",)``)."""
     """Raise on masked actions. When off, a masked action is a wasted step instead."""
 
     def __post_init__(self) -> None:
@@ -60,6 +62,10 @@ class EnvConfig:
             raise ValueError("k must be at least 1")
         if self.max_declares < 1:
             raise ValueError("max_declares must be at least 1")
+        self.masked_features = tuple(self.masked_features)
+        unknown = sorted(set(self.masked_features) - set(feature_names(self.feature_tier)))
+        if unknown:
+            raise ValueError(f"cannot mask unknown features: {', '.join(unknown)}")
 
     def max_steps_for(self, num_nodes: int) -> int:
         return max(1, min(self.max_steps_cap, math.ceil(self.max_steps_per_node * num_nodes)))
@@ -98,6 +104,8 @@ class CFGNavEnv(gym.Env):
         self._index_by_id = {graph.sample_id: i for i, graph in enumerate(self.graphs)}
         self._feature_cache: dict[int, np.ndarray] = {}
         self._feature_dim = feature_dim(self.config.feature_tier)
+        names = feature_names(self.config.feature_tier)
+        self._masked_columns = [names.index(name) for name in self.config.masked_features]
         self._slot_dim = self._feature_dim + 3
         self._backtrack_dim = 2 + len(NODE_KINDS)
         obs_dim = self._feature_dim + 2 + k * self._slot_dim + self._backtrack_dim + CONTEXT_DIM
@@ -262,6 +270,9 @@ class CFGNavEnv(gym.Env):
         feats = self._feature_cache.get(self._graph_index)
         if feats is None:
             feats = featurize(self.graph, self.config.feature_tier)
+            if self._masked_columns:
+                feats = feats.copy()
+                feats[:, self._masked_columns] = 0.0
             self._feature_cache[self._graph_index] = feats
         return feats
 
