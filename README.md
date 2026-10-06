@@ -55,18 +55,26 @@ filtering (1,251 and 327). The numbers behind that choice are in
 ```bash
 python scripts/01_filter_bigvul.py --input data/raw/bigvul_hf
 python scripts/02_write_sources.py
+scripts/03_run_joern.sh
 ```
 
-The first script keeps vulnerable functions of the CWEs in `configs/data.yaml` that have
-usable flaw lines, and records the row count after every filter in
-`data/processed/attrition.json`. The second writes one C file per function under
-`data/interim/src/`, in batches of 500, for Joern.
+1. `01_filter_bigvul.py` keeps vulnerable functions of the CWEs in `configs/data.yaml` that
+   have usable flaw lines, and records the row count after every filter in
+   `data/processed/attrition.json`.
+2. `02_write_sources.py` writes every function under `data/interim/src/`, in batches of 500,
+   once as `.c` and once as `.cpp`. BigVul mixes C and C++, and Joern picks its parser by
+   extension; parsing both ways recovers 97% of the functions, against 65% for C alone.
+3. `03_run_joern.sh` parses each batch with Joern and exports its control flow graphs to
+   `data/interim/joern/batch_XXXX.jsonl`. Finished batches are skipped on a rerun; failed ones
+   are listed in `failed_batches.txt`. Set `JOBS` to change how many batches run at once.
 
 ### Joern
 
-CFG extraction uses [Joern](https://joern.io). Install it with the installer script from the
-Joern documentation and make sure `joern` and `joern-parse` are on your `PATH`. Joern runs on
-the JVM; check the Joern release notes for the JDK version your release needs.
+CFG extraction uses [Joern](https://joern.io). The pipeline was developed against Joern
+4.0.648 on JDK 17. Download `joern-cli-<platform>.zip` from the
+[Joern releases](https://github.com/joernio/joern/releases) and unpack it to
+`.tools/joern-cli` (git-ignored), or set `JOERN_HOME` to wherever `joern` and `joern-parse`
+live, or put them on your `PATH`.
 
 ## Training
 
