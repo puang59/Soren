@@ -4,6 +4,12 @@
 cwes: ["CWE-119", "CWE-125"]
 min_lines: 5
 max_lines: 300
+# Graph construction (scripts/04_build_graphs.py).
+graphs:
+  min_nodes: 5             # CFG nodes, ENTRY and EXIT included
+  max_nodes: 300
+  min_coverage: 0.6        # share of code lines the parse must account for
+
 split:
   train: 0.8
   val: 0.1
