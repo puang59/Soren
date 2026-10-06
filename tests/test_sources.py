@@ -26,6 +26,11 @@ def test_one_file_per_function_in_batches(tmp_path):
     files = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.c"))
     assert files == sorted(manifest["path"])
     assert len(files) == 7
+    # Every function is also written as C++, with identical content.
+    for path in manifest["path"]:
+        twin = tmp_path / path.replace(".c", ".cpp")
+        assert twin.read_bytes() == (tmp_path / path).read_bytes()
+    assert len(list(tmp_path.rglob("*.cpp"))) == 7
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "batch_0000",
         "batch_0001",
@@ -71,4 +76,4 @@ def test_script(tmp_path, capsys):
     out = tmp_path / "src"
     module.main(["--input", str(source), "--out", str(out), "--batch-size", "2"])
     assert len(list(out.rglob("*.c"))) == 5
-    assert "wrote 5 files in 3 batches" in capsys.readouterr().out
+    assert "wrote 5 functions in 3 batches" in capsys.readouterr().out
