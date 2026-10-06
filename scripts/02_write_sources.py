@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Write one C file per filtered function, in batches ready for Joern.
+"""Write each filtered function as a .c and a .cpp file, in batches ready for Joern.
 
 Example:
     python scripts/02_write_sources.py --input data/interim/filtered.parquet
 
-Writes ``data/interim/src/batch_XXXX/<sample_id>.c`` and ``data/interim/src/manifest.csv``.
+Writes ``data/interim/src/batch_XXXX/<sample_id>{.c,.cpp}`` and ``data/interim/src/manifest.csv``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> None:
 
     frame = pd.read_parquet(args.input, columns=["sample_id", "func_before"])
     manifest = write_sources(frame, args.out, args.batch_size)
-    print(f"wrote {len(manifest)} files in {manifest['batch'].nunique()} batches to {args.out}")
+    print(f"wrote {len(manifest)} functions in {manifest['batch'].nunique()} batches to {args.out}")
 
 
 if __name__ == "__main__":
