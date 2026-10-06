@@ -89,7 +89,7 @@ def cfg_dot(graph: GraphRecord, trace: Trace, step: int, show_truth: bool = Fals
     lines = [
         "digraph cfg {",
         '  rankdir=TB; bgcolor="transparent";',
-        '  node [shape=box, style="filled,rounded", fontname="Helvetica", fontsize=10, '
+        '  node [shape=box, style="filled,rounded", fontname="Helvetica", fontsize=13, '
         'color="#555555", fontcolor="#111111"];',
         f'  edge [color="{COLOUR_EDGE}", arrowsize=0.7];',
     ]
