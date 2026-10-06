@@ -1,7 +1,8 @@
 """Turn a graph and a position in a trace into things to draw.
 
-Everything here is a pure function of ``(graph, trace, step)``, so it can be tested without a
-browser. ``step`` counts actions already taken: 0 is the start, ``len(trace.steps)`` the end.
+Everything here is a pure function of ``(graph, trace, step)``. The terminal demo and the
+exporter for the web visualizer build on it. ``step`` counts actions already taken: 0 is the
+start, ``len(trace.steps)`` the end.
 """
 
 from __future__ import annotations

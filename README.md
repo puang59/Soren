@@ -28,31 +28,44 @@ per-statement features can say, not the search policy. On synthetic graphs with 
 signal the same agent localizes 98% while inspecting fewer nodes than DFS. The report has the
 details and the caveats.
 
-## Presenting it
+## Visualizing a traversal
 
-Two ways to show the agent working. Both need the processed test graphs
-(`data/processed/graphs_test.jsonl`) and a trained checkpoint
-(`runs/final/base/seed1/best_model.zip`); see the sections below for how to produce them.
-Neither needs Joern or a network connection at presentation time.
+### Web app
 
-### In the browser
+`web-app/` is a static page that replays how each method walked a function: the control flow
+graph and the source side by side, stepping together.
+
+![The web visualizer after the agent has found the flaw](docs/images/visualizer.png)
 
 ```bash
-streamlit run soren/viz/app.py -- --live --graphs data/processed/graphs_test.jsonl
+open web-app/index.html          # macOS; or open the file in any browser
 ```
 
-![The visualizer after the agent has found the flaw](docs/images/visualizer.png)
+It needs no server and no network. If your browser blocks local scripts, serve the folder
+instead: `python -m http.server -d web-app 8000`, then open `http://localhost:8000`.
 
-The page opens at `http://localhost:8501`. In the sidebar:
+- **Function** selects a test function; `✔` and `✘` show whether the agent localizes it.
+- **Method** is the trained agent or a baseline (depth-first, breadth-first, line order,
+  heuristic-first). **Compare with** shows a second method beside the first.
+- **▶ / ◀** step one action, **Play** runs the episode, and the slider scrubs through it.
+  Keys: `←` `→` step, `Space` play, `Home` restart.
+- **Show ground truth** outlines the statement the fix changed. Leave it off until the method
+  has declared.
 
-1. **Function** picks a test function. Keep the size slider low so the graph is readable.
-2. **Method** is `ppo` for the trained agent, or a baseline such as `dfs`.
-3. Press **▶** to advance one action, or **Play** to run. The graph and the source move
-   together; under them are the steps so far and the agent's action probabilities.
-4. Switch on **Show ground truth** once the agent has declared, to reveal the answer.
-5. **Compare with** puts a second method beside the first on the same function.
+The page is black and white; colour is used only for the state of the walk, as the key under
+the controls explains. Under the graph it lists the actions taken so far and, for the agent,
+the probability it gave each available action.
 
-### In the terminal
+The episodes come from `web-app/data/episodes.js`. To regenerate it from a trained checkpoint
+and the processed test graphs:
+
+```bash
+python scripts/export_webapp.py
+```
+
+### Terminal
+
+The same replay in a terminal, run live from the checkpoint:
 
 ```bash
 python -m soren.demo                    # the agent on a function it gets right
@@ -64,12 +77,11 @@ python -m soren.demo --graph bigvul_048191 --method heuristic_first
 ```
 
 The source is printed with the current line highlighted, visited lines marked with `·`, and
-the declaration marked `✔` or `✘`. The ground truth (`◆`) appears only at the end.
+the declaration marked `✔` or `✘`. The ground truth (`◆`) appears only at the end. With no
+dataset or checkpoint, `python -m soren.demo --synthetic` runs depth-first search on a
+generated function.
 
-With no dataset or checkpoint at all, `python -m soren.demo --synthetic` runs depth-first
-search on a generated function, which is enough to show the mechanics.
-
-A five-minute talk track built around these is in [`docs/demo.md`](docs/demo.md).
+These commands need the virtualenv from Setup to be active.
 
 ## Setup
 
@@ -173,7 +185,7 @@ Each run writes its resolved configuration, the best and final checkpoints, the 
 history and TensorBoard logs to `runs/<name>/`. Hyperparameters live in `configs/ppo.yaml`,
 environment and reward settings in `configs/env.yaml`.
 
-## Evaluation and visualizer
+## Evaluation
 
 ```bash
 # Baselines and a checkpoint through one harness; per-episode results go to Parquet.
@@ -184,16 +196,10 @@ python scripts/evaluate.py --graphs data/synthetic/val.jsonl --split val \
 # Confidence intervals and paired tests against a reference method.
 python scripts/summarize_results.py --results runs/synthetic-demo/eval_val.parquet --reference ppo
 
-# Record traces, then replay them in the browser.
+# Record step-by-step traces as JSON, one per method and graph.
 python scripts/make_traces.py --graphs data/synthetic/val.jsonl --limit 20 --methods dfs bfs \
     --checkpoints runs/synthetic-demo/best_model.zip --out runs/synthetic-demo/traces
-streamlit run soren/viz/app.py -- --graphs data/synthetic/val.jsonl \
-    --traces runs/synthetic-demo/traces
 ```
-
-The visualizer shows the control flow graph next to the source and steps through an episode.
-Ground truth stays hidden until you switch it on, and "Compare with" puts a second method
-beside the first.
 
 ## Reproducing the BigVul experiments
 
@@ -237,7 +243,8 @@ To try the pipeline without BigVul or Joern, use the synthetic graphs in the Tra
 | `soren/agents` | PPO and DQN agents |
 | `soren/baselines` | Traversal baselines and reference models |
 | `soren/eval` | Evaluation harness, metrics and statistics |
-| `soren/viz` | Trace format and traversal visualizer |
+| `soren/viz` | Trace format and replay helpers |
+| `web-app` | Static web visualizer |
 | `scripts` | Data pipeline, training and evaluation entry points |
 | `configs` | YAML configuration |
 | `experiments` | Experiment notes, result tables and figures |
