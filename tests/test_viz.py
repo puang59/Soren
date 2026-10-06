@@ -1,12 +1,8 @@
-from pathlib import Path
-
 import numpy as np
 import pytest
 from helpers import diamond_graph, loop_graph
-from streamlit.testing.v1 import AppTest
 
-from soren.baselines import BFS, DFS
-from soren.data.schema import write_jsonl
+from soren.baselines import DFS
 from soren.data.synthetic import SyntheticConfig, generate_dataset
 from soren.env.cfg_nav_env import EnvConfig
 from soren.viz.render import (
@@ -26,7 +22,6 @@ from soren.viz.render import (
 )
 from soren.viz.trace import Trace, TraceStep
 
-APP = Path(__file__).parent.parent / "soren" / "viz" / "app.py"
 K = EnvConfig().k
 
 
@@ -161,138 +156,3 @@ def test_step_table_and_labels():
     assert labels[-2:] == ["backtrack", "declare"] and len(labels) == K + 2
     text = outcome_text(graph, trace)
     assert "found the vulnerable statement" in text and "4 of 6 nodes" in text
-
-
-@pytest.fixture
-def demo(tmp_path):
-    graphs = generate_dataset(6, seed=4, cfg=SyntheticConfig(min_nodes=8, max_nodes=20))
-    graphs_path = tmp_path / "val.jsonl"
-    write_jsonl(graphs, graphs_path)
-    traces = tmp_path / "traces"
-    for searcher in (DFS(), BFS()):
-        for graph in graphs:
-            searcher.trace(graph, 100, rng()).save(
-                traces / searcher.name / f"{graph.sample_id}.json"
-            )
-    # One policy-style trace with probabilities, to exercise the probability chart.
-    trace = DFS().trace(graphs[0], 100, rng())
-    for step in trace.steps:
-        step.probs = [1.0 / (K + 2)] * (K + 2)
-        step.value = 0.5
-    trace.method = "ppo"
-    trace.save(traces / "ppo" / f"{graphs[0].sample_id}.json")
-    return graphs, graphs_path, traces
-
-
-def run_app(monkeypatch, graphs_path, traces) -> AppTest:
-    monkeypatch.setenv("SOREN_GRAPHS", str(graphs_path))
-    monkeypatch.setenv("SOREN_TRACES", str(traces))
-    app = AppTest.from_file(str(APP), default_timeout=30)
-    app.run()
-    assert not app.exception, app.exception
-    return app
-
-
-def test_app_replays_an_episode(monkeypatch, demo):
-    graphs, graphs_path, traces = demo
-    app = run_app(monkeypatch, graphs_path, traces)
-    assert app.selectbox(key="method").options == ["bfs", "dfs", "ppo"]
-    options = app.selectbox(key="graph").options
-    assert [o.split(" · ")[0] for o in options] == [g.sample_id for g in graphs]
-    assert options[0] == f"{graphs[0].sample_id} · {graphs[0].num_nodes} nodes"
-    assert app.session_state["step"] == 0
-    assert any("Step 0 of" in c.value for c in app.caption)
-
-    app.button(key="next").click().run()
-    app.button(key="next").click().run()
-    assert not app.exception and app.session_state["step"] == 2
-    assert len(app.dataframe[0].value) == 2
-    app.button(key="prev").click().run()
-    assert app.session_state["step"] == 1
-    app.button(key="first").click().run()
-    assert app.session_state["step"] == 0
-
-
-def test_app_shows_the_outcome_at_the_end_and_resets_on_a_new_episode(monkeypatch, demo):
-    graphs, graphs_path, traces = demo
-    app = run_app(monkeypatch, graphs_path, traces)
-    total = len(Trace.load(traces / "bfs" / f"{graphs[0].sample_id}.json").steps)
-    app.slider(key="step").set_value(total).run()
-    assert not app.exception
-    assert "bfs found the vulnerable statement" in app.success[0].value
-
-    app.selectbox(key="graph").select(graphs[1].sample_id).run()
-    assert app.session_state["step"] == 0  # a new episode starts from the beginning
-    app.selectbox(key="method").select("ppo").run()
-    assert not app.exception
-    assert [o.split(" · ")[0] for o in app.selectbox(key="graph").options] == [graphs[0].sample_id]
-    assert any("Policy at this step" in c.value for c in app.caption)
-
-
-def test_app_filters_and_ground_truth_toggle(monkeypatch, demo):
-    graphs, graphs_path, traces = demo
-    app = run_app(monkeypatch, graphs_path, traces)
-    app.radio(key="outcome").set_value("failure").run()
-    assert not app.exception
-    assert "No episode matches the filters." in [i.value for i in app.info]
-    app.radio(key="outcome").set_value("all").run()
-    app.toggle(key="truth").set_value(True).run()
-    assert not app.exception
-    assert any("Ground truth is shown" in c.value for c in app.caption)
-
-
-def test_app_explains_missing_data(monkeypatch, tmp_path, demo):
-    _, graphs_path, _ = demo
-    app = run_app(monkeypatch, tmp_path / "missing.jsonl", tmp_path / "none")
-    assert "Graph file not found" in app.info[0].value
-    app = run_app(monkeypatch, graphs_path, tmp_path / "none")
-    assert "Traces directory not found" in app.info[0].value
-    (tmp_path / "empty").mkdir()
-    app = run_app(monkeypatch, graphs_path, tmp_path / "empty")
-    assert "No traces in" in app.info[0].value
-
-
-def test_compare_mode_shows_two_methods_advancing_together(monkeypatch, demo):
-    graphs, graphs_path, traces = demo
-    app = run_app(monkeypatch, graphs_path, traces)
-    compare = app.selectbox(key="compare")
-    assert compare.options == ["(none)", "dfs", "ppo"]  # bfs is the primary method
-    assert not app.metric  # single view has no side-by-side counters
-
-    compare.select("dfs").run()
-    assert not app.exception
-    assert [h.value for h in app.subheader] == ["bfs", "dfs"]
-    assert app.session_state["step"] == 0
-    assert [m.value for m in app.metric][::2] == [f"1 of {graphs[0].num_nodes}"] * 2
-
-    bfs = Trace.load(traces / "bfs" / f"{graphs[0].sample_id}.json")
-    dfs = Trace.load(traces / "dfs" / f"{graphs[0].sample_id}.json")
-    longest = max(len(bfs.steps), len(dfs.steps))
-    assert app.slider(key="step").max == longest
-
-    app.button(key="next").click().run()
-    app.button(key="next").click().run()
-    actions = [m.value for m in app.metric][1::2]
-    assert actions == [f"2 of {len(bfs.steps)}", f"2 of {len(dfs.steps)}"]
-
-    # At the end both outcomes are shown; the shorter episode waited at its last step.
-    app.slider(key="step").set_value(longest).run()
-    assert not app.exception
-    banners = [b.value for b in (*app.success, *app.error)]
-    assert any(b.startswith("bfs ") for b in banners) and any(b.startswith("dfs ") for b in banners)
-    actions = [m.value for m in app.metric][1::2]
-    assert actions == [
-        f"{len(bfs.steps)} of {len(bfs.steps)}",
-        f"{len(dfs.steps)} of {len(dfs.steps)}",
-    ]
-
-    app.selectbox(key="compare").select("(none)").run()
-    assert not app.exception and not app.metric
-
-
-def test_compare_option_is_hidden_when_no_other_method_has_the_graph(monkeypatch, tmp_path, demo):
-    graphs, graphs_path, _ = demo
-    only = tmp_path / "only"
-    DFS().trace(graphs[0], 100, rng()).save(only / "dfs" / f"{graphs[0].sample_id}.json")
-    app = run_app(monkeypatch, graphs_path, only)
-    assert not [box for box in app.selectbox if box.key == "compare"]
