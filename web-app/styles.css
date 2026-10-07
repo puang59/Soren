@@ -138,6 +138,7 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 #panels.two { grid-template-columns: 1fr 1fr; }
 
 .panel { min-width: 0; }
+.rule { margin: 2px 0 0; }
 .status { margin: 2px 0 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .outcome {
   margin: 0 0 10px;

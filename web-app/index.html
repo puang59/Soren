@@ -69,14 +69,18 @@
 <main id="panels"></main>
 
 <footer>
-  <p>Data: BigVul test functions (CWE-119, CWE-125). Baselines stop automatically when they
-  reach a vulnerable statement; the agent has to decide to declare. Keys: ← → step, Space
-  play, Home restart.</p>
+  <p>Data: BigVul test functions (CWE-119, CWE-125). The agent has to decide to declare, and
+  so does a "must declare" baseline: it walks in its own order and declares at the first
+  statement whose suspicion score (a fixed weighted count of dangerous calls, array subscripts,
+  pointer arithmetic and similar) reaches its threshold, so it can be wrong. A "stops at the
+  answer" baseline is told when it reaches a vulnerable statement and only shows how far it
+  had to look. Keys: ← → step, Space play, Home restart.</p>
 </footer>
 
 <template id="panel-template">
   <article class="panel">
     <h2></h2>
+    <p class="rule"></p>
     <p class="status"></p>
     <p class="outcome" hidden></p>
     <div class="views">

@@ -133,6 +133,12 @@ function buildPanel(episode, methodKey) {
   const root = $("panel-template").content.firstElementChild.cloneNode(true);
   const trace = episode.traces[methodKey];
   root.querySelector("h2").textContent = data.methods[methodKey];
+  const info = data.method_info[methodKey];
+  root.querySelector(".rule").textContent = {
+    policy: "Learned policy: chooses each move and decides for itself when to declare.",
+    threshold: `Fixed rule, no learning: declares at the first statement whose suspicion score reaches ${info.threshold}. It is never told the answer.`,
+    oracle: "Fixed rule, no learning: stopped automatically on reaching a vulnerable statement, so it cannot be wrong.",
+  }[info.rule];
   const graph = buildGraph(root.querySelector("svg"), episode);
 
   const lineNodes = new Map();
@@ -152,11 +158,11 @@ function buildPanel(episode, methodKey) {
     source.append(li);
     return li;
   });
-  return { root, episode, trace, graph, lines, lineNodes };
+  return { root, episode, trace, graph, lines, lineNodes, info };
 }
 
 function renderPanel(panel, step, showTruth) {
-  const { root, episode, trace, graph, lines, lineNodes } = panel;
+  const { root, episode, trace, graph, lines, lineNodes, info } = panel;
   const at = Math.min(step, trace.steps.length);
   const done = at === trace.steps.length;
   const s = replay(trace, at);
@@ -191,8 +197,9 @@ function renderPanel(panel, step, showTruth) {
   const currentLine = lines[(lineNodes.get(s.current) || 1) - 1];
   if (currentLine && state.timer) currentLine.scrollIntoView({ block: "nearest" });
 
+  const score = info.rule === "threshold" ? ` · suspicion score here ${episode.scores[s.current].toFixed(2)}` : "";
   root.querySelector(".status").textContent =
-    `step ${at} of ${trace.steps.length} · ${s.visits.size} of ${episode.nodes.length} nodes inspected · return ${s.ret.toFixed(2)}`;
+    `step ${at} of ${trace.steps.length} · ${s.visits.size} of ${episode.nodes.length} nodes inspected · return ${s.ret.toFixed(2)}${score}`;
 
   const outcome = root.querySelector(".outcome");
   outcome.hidden = !done;

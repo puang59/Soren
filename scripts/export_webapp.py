@@ -7,6 +7,10 @@ Example:
 Runs the trained agent and the baselines on test functions and writes everything the page
 needs (source, control flow graph, labels, and each method's step-by-step trace) to
 ``web-app/data/episodes.js``. The page is static: it reads that one file and needs no server.
+
+Each baseline is exported twice: under Protocol B, where it declares at the first statement
+whose heuristic score reaches its tuned threshold and can be wrong like the agent, and under
+Protocol A, where it is stopped on reaching a vulnerable statement.
 """
 
 from __future__ import annotations
@@ -18,8 +22,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from soren.baselines.heuristic import make_baseline
-from soren.config import load_config
+from soren.baselines.heuristic import HeuristicScorer, make_baseline
+from soren.config import load_config, load_yaml
 from soren.data.schema import GraphRecord, read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
@@ -28,13 +32,14 @@ from soren.viz.render import action_labels
 from soren.viz.trace import Trace
 
 BASELINES = ("dfs", "bfs", "line_order", "heuristic_first")
-METHOD_NAMES = {
-    "ppo": "PPO agent",
+BASELINE_NAMES = {
     "dfs": "Depth-first search",
     "bfs": "Breadth-first search",
     "line_order": "Line order",
     "heuristic_first": "Heuristic-first",
 }
+DECLARES = "must declare"
+ORACLE = "stops at the answer"
 
 
 def trace_payload(graph: GraphRecord, trace: Trace) -> dict:
@@ -126,19 +131,36 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-nodes", type=int, default=32, help="skip larger functions")
     parser.add_argument("--max-lines", type=int, default=60)
     parser.add_argument("--env-config", default="configs/env.yaml")
+    parser.add_argument("--eval-config", default="configs/eval.yaml", help="Protocol B thresholds")
     parser.add_argument("--raw", default="data/raw/bigvul_hf", help="for CVE and commit details")
     parser.add_argument("--filtered", default="data/interim/filtered.parquet", help="for the fix")
     args = parser.parse_args(argv)
 
     env = load_config(EnvConfig, args.env_config, section="env")
     reward = load_config(RewardConfig, args.env_config, section="reward")
-    searchers = {name: make_baseline(name, env, reward) for name in BASELINES}
+    thresholds = load_yaml(args.eval_config)["protocol_b"]["heuristic"]
+    scorer = HeuristicScorer()
+    # Declaring baselines first: they are the fair comparison for the agent.
+    searchers = {}
+    names = {}
+    info = {}
+    for name in BASELINES:
+        declaring = make_baseline(name, env, reward, scorer, thresholds[name])
+        searchers[declaring.name] = declaring
+        names[declaring.name] = f"{BASELINE_NAMES[name]} ({DECLARES})"
+        info[declaring.name] = {"rule": "threshold", "threshold": thresholds[name]}
+    for name in BASELINES:
+        searchers[name] = make_baseline(name, env, reward)
+        names[name] = f"{BASELINE_NAMES[name]} ({ORACLE})"
+        info[name] = {"rule": "oracle"}
     if Path(args.checkpoint).is_file():
         from soren.agents.searcher import PolicySearcher
         from soren.agents.train import load_model
 
         policy = PolicySearcher(load_model(args.checkpoint), env, reward, name="ppo")
         searchers = {"ppo": policy, **searchers}
+        names["ppo"] = "PPO agent"
+        info["ppo"] = {"rule": "policy"}
     else:
         print(f"no checkpoint at {args.checkpoint}; exporting baselines only")
 
@@ -151,13 +173,18 @@ def main(argv: list[str] | None = None) -> None:
     episodes = []
     for graph in graphs:
         payload = graph_payload(graph, background)
+        payload["scores"] = [round(float(score), 3) for score in scorer.scores(graph)]
         budget = env.max_steps_for(graph.num_nodes)
         for name, searcher in searchers.items():
             trace = searcher.trace(graph, budget, np.random.default_rng(0))
             payload["traces"][name] = trace_payload(graph, trace)
         episodes.append(payload)
 
-    data = {"methods": {name: METHOD_NAMES[name] for name in searchers}, "episodes": episodes}
+    data = {
+        "methods": {name: names[name] for name in searchers},
+        "method_info": {name: info[name] for name in searchers},
+        "episodes": episodes,
+    }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # A script that sets a global, so the page also works when opened straight from disk.
