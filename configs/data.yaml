@@ -1,4 +1,4 @@
-# Dataset selection and preprocessing (plan sections 7-9).
+# Dataset selection and preprocessing.
 # CWE-119 and CWE-125 leave 1,578 usable functions (1,251 + 327), above the 1,000 threshold
 # of the decision gate, so they are kept as two categories. See notebooks/01_eda.ipynb.
 cwes: ["CWE-119", "CWE-125"]
@@ -17,7 +17,7 @@ split:
   test: 0.1
   seed: 0
 
-# API name lists behind the Tier L call flags (plan section 9.2).
+# API name lists behind the Tier L call flags.
 lexicon:
   dangerous_calls: [
     memcpy, memmove, memset, strcpy, strncpy, strcat, strncat, sprintf, snprintf,

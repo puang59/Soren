@@ -7,9 +7,7 @@ classifying a whole function in one pass, Soren learns to walk a function's cont
 graph and declare the statement responsible for a vulnerability.
 
 - **Report:** [`docs/report.md`](docs/report.md)
-- **Demo script:** [`docs/demo.md`](docs/demo.md)
 - **Experiment notes and figures:** [`experiments/`](experiments/)
-- **Design and roadmap:** [`plan/IMPLEMENTATION_PLAN.md`](plan/IMPLEMENTATION_PLAN.md)
 
 ## Results in brief
 
@@ -250,4 +248,4 @@ To try the pipeline without BigVul or Joern, use the synthetic graphs in the Tra
 | `scripts` | Data pipeline, training and evaluation entry points |
 | `configs` | YAML configuration |
 | `experiments` | Experiment notes, result tables and figures |
-| `docs` | Report and demo script |
+| `docs` | Report |

@@ -1,4 +1,4 @@
-# MaskablePPO hyperparameters (plan section 12.1).
+# MaskablePPO hyperparameters.
 total_timesteps: 2000000
 n_envs: 16
 n_steps: 512
