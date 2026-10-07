@@ -162,8 +162,12 @@ class GraphRecord:
 
     # ----------------------------------------------------------------- validation
 
-    def validate(self) -> GraphRecord:
-        """Check structural invariants; raise :class:`SchemaError` on the first violation."""
+    def validate(self, labelled: bool = True) -> GraphRecord:
+        """Check structural invariants; raise :class:`SchemaError` on the first violation.
+
+        A record normally needs at least one reachable vulnerable node. ``labelled=False``
+        accepts one with none, for a function whose ground truth is unknown.
+        """
         n = self.num_nodes
         if n < 3:
             raise SchemaError(f"{self.sample_id}: need at least 3 nodes, got {n}")
@@ -196,7 +200,7 @@ class GraphRecord:
             if tuple(edge) not in seen:
                 raise SchemaError(f"{self.sample_id}: back edge {tuple(edge)} is not an edge")
 
-        if not self.vuln_nodes:
+        if not self.vuln_nodes and labelled:
             raise SchemaError(f"{self.sample_id}: vuln_nodes is empty")
         if len(set(self.vuln_nodes)) != len(self.vuln_nodes):
             raise SchemaError(f"{self.sample_id}: vuln_nodes contains duplicates")
@@ -205,7 +209,7 @@ class GraphRecord:
                 raise SchemaError(f"{self.sample_id}: vulnerable node {v} is not a node")
             if v in (self.entry, self.exit):
                 raise SchemaError(f"{self.sample_id}: ENTRY/EXIT cannot be vulnerable")
-        if not self.vuln_set & self.reachable_from_entry():
+        if self.vuln_nodes and not self.vuln_set & self.reachable_from_entry():
             raise SchemaError(f"{self.sample_id}: no vulnerable node is reachable from entry")
 
         for tier, matrix in self.features.items():

@@ -26,6 +26,20 @@
   <label class="check">
     <input type="checkbox" id="truth"> Show ground truth and the fix
   </label>
+  <button id="paste-open" aria-expanded="false" aria-controls="paste">Try your own function</button>
+</section>
+
+<section id="paste" hidden aria-label="Try your own function">
+  <h2>Try your own function</h2>
+  <p class="paste-note" id="paste-note"></p>
+  <textarea id="paste-code" rows="14" spellcheck="false" aria-label="A C or C++ function"
+    placeholder="int copy_name(char *dst, const char *src, int len)&#10;{&#10;    char buf[64];&#10;    ...&#10;}"></textarea>
+  <div class="paste-actions">
+    <button id="paste-run">Analyse</button>
+    <button id="paste-sample">Use an example</button>
+    <button id="paste-close">Close</button>
+    <p id="paste-status" role="status"></p>
+  </div>
 </section>
 
 <section class="transport" aria-label="Playback">
@@ -49,6 +63,7 @@
   <li><span class="swatch visited"></span>visited</li>
   <li><span class="swatch ok"></span>declared, correct</li>
   <li><span class="swatch bad"></span>declared, wrong</li>
+  <li><span class="swatch declared"></span>declared, no ground truth</li>
   <li><span class="swatch truth"></span>ground truth</li>
   <li><span class="swatch stack"></span>on the path back</li>
   <li><span class="swatch removed"></span>removed by the fix</li>
@@ -74,7 +89,9 @@
   statement whose suspicion score (a fixed weighted count of dangerous calls, array subscripts,
   pointer arithmetic and similar) reaches its threshold, so it can be wrong. A "stops at the
   answer" baseline is told when it reaches a vulnerable statement and only shows how far it
-  had to look. Keys: ← → step, Space play, Home restart.</p>
+  had to look. A function you paste has no ground truth, so its declarations get no verdict
+  and the "stops at the answer" baselines cannot run on it. Keys: ← → step, Space play, Home
+  restart.</p>
 </footer>
 
 <template id="panel-template">

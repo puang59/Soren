@@ -1,5 +1,6 @@
 // Soren web visualizer. Plain DOM and SVG, no dependencies: it reads window.SOREN_DATA
-// (written by scripts/export_webapp.py) and replays each method's saved trace.
+// (written by scripts/export_webapp.py) and replays each method's saved trace. Served by
+// `python -m soren.serve` it can also send a pasted function to be analysed.
 
 const data = window.SOREN_DATA;
 const $ = (id) => document.getElementById(id);
@@ -9,6 +10,9 @@ const ui = {
   fn: $("function"), method: $("method"), compare: $("compare"), truth: $("truth"),
   first: $("first"), prev: $("prev"), next: $("next"), play: $("play"), speed: $("speed"),
   step: $("step"), stepLabel: $("step-label"), panels: $("panels"),
+  paste: $("paste"), pasteOpen: $("paste-open"), pasteCode: $("paste-code"), pasteRun: $("paste-run"),
+  pasteSample: $("paste-sample"), pasteClose: $("paste-close"), pasteNote: $("paste-note"),
+  pasteStatus: $("paste-status"),
 };
 
 const state = { step: 0, timer: null };
@@ -169,12 +173,14 @@ function renderPanel(panel, step, showTruth) {
   const vulnerable = new Set(episode.vulnerable);
   const declared = new Set(s.declared);
   const stack = new Set(s.stack);
+  // A pasted function has no ground truth, so a declaration is neither right nor wrong.
+  const verdict = (id) => (episode.unlabelled ? "declared" : vulnerable.has(id) ? "ok" : "bad");
 
   for (const [id, group] of graph.nodes) {
     const classes = ["node"];
     if (s.visits.has(id)) classes.push("visited");
     if (id === s.current && !declared.has(id)) classes.push("current");
-    if (declared.has(id)) classes.push(vulnerable.has(id) ? "ok" : "bad");
+    if (declared.has(id)) classes.push(verdict(id));
     if (stack.has(id)) classes.push("stack");
     if (showTruth && vulnerable.has(id)) classes.push("truth");
     group.setAttribute("class", classes.join(" "));
@@ -189,7 +195,7 @@ function renderPanel(panel, step, showTruth) {
   const set = (id, cls) => { if (lineNodes.has(id)) mark.set(lineNodes.get(id), cls); };
   for (const id of s.visits.keys()) set(id, "visited");
   if (!declared.has(s.current)) set(s.current, "current");
-  for (const id of declared) set(id, vulnerable.has(id) ? "ok" : "bad");
+  for (const id of declared) set(id, verdict(id));
   const truthLines = new Set(showTruth ? episode.vulnerable.map((id) => lineNodes.get(id)) : []);
   lines.forEach((li, i) => {
     li.className = [mark.get(i + 1) || "", truthLines.has(i + 1) ? "truth" : ""].join(" ").trim();
@@ -198,12 +204,21 @@ function renderPanel(panel, step, showTruth) {
   if (currentLine && state.timer) currentLine.scrollIntoView({ block: "nearest" });
 
   const score = info.rule === "threshold" ? ` · suspicion score here ${episode.scores[s.current].toFixed(2)}` : "";
+  // The return depends on whether the declaration was right, which is unknown for pasted code.
+  const ret = episode.unlabelled ? "" : ` · return ${s.ret.toFixed(2)}`;
   root.querySelector(".status").textContent =
-    `step ${at} of ${trace.steps.length} · ${s.visits.size} of ${episode.nodes.length} nodes inspected · return ${s.ret.toFixed(2)}${score}`;
+    `step ${at} of ${trace.steps.length} · ${s.visits.size} of ${episode.nodes.length} nodes inspected${ret}${score}`;
 
   const outcome = root.querySelector(".outcome");
   outcome.hidden = !done;
-  if (done) {
+  if (done && episode.unlabelled) {
+    const last = trace.steps[trace.steps.length - 1];
+    const said = last && last.action === "DECLARE";
+    outcome.className = `outcome ${said ? "declared" : "bad"}`;
+    outcome.textContent = said
+      ? `Declared line ${episode.nodes[last.node].line} after ${trace.steps.length} actions. There is no ground truth for pasted code, so this is the method's guess, not a verified finding.`
+      : "Did not declare any statement.";
+  } else if (done) {
     outcome.className = `outcome ${trace.success ? "ok" : "bad"}`;
     const reason = { correct: "", wrong_declare: " (declared the wrong statement)", timeout: " (ran out of steps)", exhausted: " (nothing passed its threshold)", dead_end: " (dead end)" }[trace.end_reason] || "";
     outcome.textContent = trace.success
@@ -239,7 +254,8 @@ function renderPanel(panel, step, showTruth) {
   };
   root.querySelector("tbody").replaceChildren(...trace.steps.slice(0, at).map((act, i) => {
     const tr = document.createElement("tr");
-    const cells = [i + 1, lineOf(act.node), act.action.replace(/_\d+$/, "").toLowerCase(), act.action === "DECLARE" ? "" : lineOf(act.next), act.reward.toFixed(2)];
+    const unknown = episode.unlabelled && act.action === "DECLARE";
+    const cells = [i + 1, lineOf(act.node), act.action.replace(/_\d+$/, "").toLowerCase(), act.action === "DECLARE" ? "" : lineOf(act.next), unknown ? "n/a" : act.reward.toFixed(2)];
     for (const value of cells) {
       const td = document.createElement("td");
       td.textContent = value;
@@ -260,7 +276,8 @@ function totalSteps() {
 // The CVE, the fixing commit and its diff: shown with the ground truth, never before.
 function renderWhy(episode) {
   const why = $("why");
-  why.hidden = !ui.truth.checked;
+  ui.truth.disabled = Boolean(episode.unlabelled);
+  why.hidden = !ui.truth.checked || ui.truth.disabled;
   if (why.hidden || why.dataset.id === episode.id) return;
   why.dataset.id = episode.id;
 
@@ -309,7 +326,7 @@ function renderWhy(episode) {
 
 function render() {
   if (panels.length) renderWhy(panels[0].episode);
-  for (const panel of panels) renderPanel(panel, state.step, ui.truth.checked);
+  for (const panel of panels) renderPanel(panel, state.step, ui.truth.checked && !ui.truth.disabled);
   ui.step.value = state.step;
   ui.stepLabel.textContent = `${state.step} / ${totalSteps()}`;
 }
@@ -339,6 +356,11 @@ function play() {
 function rebuild() {
   stop();
   const episode = data.episodes[ui.fn.selectedIndex];
+  // Not every method has a trace for every function: an oracle stop needs a ground truth.
+  for (const select of [ui.method, ui.compare]) {
+    for (const o of select.options) o.disabled = Boolean(o.value) && !(o.value in episode.traces);
+    if (select.selectedOptions[0].disabled) select.value = select === ui.method ? Object.keys(episode.traces)[0] : "";
+  }
   const methods = [ui.method.value];
   if (ui.compare.value && ui.compare.value !== ui.method.value) methods.push(ui.compare.value);
   panels = methods.map((key) => buildPanel(episode, key));
@@ -356,16 +378,97 @@ function option(value, label) {
   return o;
 }
 
+function episodeOption(episode, first) {
+  const verdict = episode.unlabelled ? "✎" : episode.traces[first].success ? "✔" : "✘";
+  return option(episode.id, `${verdict} ${episode.id} · ${episode.project} · ${episode.nodes.length} nodes`);
+}
+
+// ---------------------------------------------------------------- your own function
+
+const SAMPLE = `int copy_name(char *dst, const char *src, int len)
+{
+    char buf[64];
+    int i;
+    if (len < 0) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        buf[i] = src[i];
+    }
+    memcpy(dst, buf, len);
+    dst[len] = '\\0';
+    return len;
+}
+`;
+
+let live = false;
+
+function pasteStatus(text, error = false) {
+  ui.pasteStatus.textContent = text;
+  ui.pasteStatus.classList.toggle("error", error);
+}
+
+function togglePaste(open) {
+  ui.paste.hidden = !open;
+  ui.pasteOpen.setAttribute("aria-expanded", String(open));
+  if (open && live) ui.pasteCode.focus();
+}
+
+async function analyse() {
+  const code = ui.pasteCode.value;
+  if (!code.trim()) return pasteStatus("Paste a C or C++ function first.", true);
+  ui.pasteRun.disabled = true;
+  pasteStatus("Parsing with Joern and running the methods. This takes about ten seconds…");
+  try {
+    const response = await fetch("api/analyse", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }),
+    });
+    const body = await response.json();
+    if (!response.ok) return pasteStatus(body.error || "The analysis failed.", true);
+    data.episodes.push(body);
+    ui.fn.append(episodeOption(body));
+    ui.fn.selectedIndex = data.episodes.length - 1;
+    pasteStatus("");
+    togglePaste(false);
+    rebuild();
+    ui.panels.scrollIntoView({ block: "start" });
+  } catch {
+    pasteStatus("Could not reach the server. Is `python -m soren.serve` still running?", true);
+  } finally {
+    ui.pasteRun.disabled = false;
+  }
+}
+
+// Live analysis exists only when the page is served by soren.serve with Joern available.
+async function initPaste() {
+  let note = "This needs the local server. Start it with `python -m soren.serve` and open the address it prints.";
+  try {
+    const status = await (await fetch("api/status")).json();
+    live = Boolean(status.live);
+    note = live
+      ? "Paste one complete C or C++ function. It is parsed into a control flow graph, then walked by the trained agent and the declaring baselines. There is no ground truth for your code: a declaration is the method's guess, and on the test set the agent's guess is right about one time in five."
+      : "The server is running but Joern was not found, so pasted code cannot be parsed. Set JOERN_HOME or pass --joern-home.";
+  } catch { /* opened from disk or a static host */ }
+  ui.pasteNote.replaceChildren(...note.split("`").map((part, i) => {
+    if (i % 2 === 0) return document.createTextNode(part);
+    const code = document.createElement("code");
+    code.textContent = part;
+    return code;
+  }));
+  for (const control of [ui.pasteCode, ui.pasteRun, ui.pasteSample]) control.disabled = !live;
+  ui.pasteOpen.addEventListener("click", () => togglePaste(ui.paste.hidden));
+  ui.pasteClose.addEventListener("click", () => togglePaste(false));
+  ui.pasteSample.addEventListener("click", () => { ui.pasteCode.value = SAMPLE; pasteStatus(""); });
+  ui.pasteRun.addEventListener("click", analyse);
+}
+
 function init() {
   if (!data || !data.episodes.length) {
     ui.panels.textContent = "No data found. Run: python scripts/export_webapp.py";
     return;
   }
   const first = Object.keys(data.methods)[0];
-  ui.fn.append(...data.episodes.map((e) => {
-    const verdict = e.traces[first].success ? "✔" : "✘";
-    return option(e.id, `${verdict} ${e.id} · ${e.project} · ${e.nodes.length} nodes`);
-  }));
+  ui.fn.append(...data.episodes.map((e) => episodeOption(e, first)));
   for (const [key, name] of Object.entries(data.methods)) ui.method.append(option(key, name));
   ui.compare.append(option("", "(none)"));
   for (const [key, name] of Object.entries(data.methods)) ui.compare.append(option(key, name));
@@ -382,7 +485,7 @@ function init() {
   ui.step.addEventListener("input", () => { stop(); setStep(Number(ui.step.value)); });
 
   document.addEventListener("keydown", (event) => {
-    if (event.target.matches("select, input")) return;
+    if (event.target.matches("select, input, textarea")) return;
     if (event.key === "ArrowRight") { stop(); setStep(state.step + 1); }
     else if (event.key === "ArrowLeft") { stop(); setStep(state.step - 1); }
     else if (event.key === "Home") { stop(); setStep(0); }
@@ -393,6 +496,7 @@ function init() {
   const start = data.episodes.findIndex((e) => e.traces[first].success && e.traces[first].steps.length >= 4);
   ui.fn.selectedIndex = Math.max(start, 0);
   rebuild();
+  initPaste();
 }
 
 init();

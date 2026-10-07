@@ -63,6 +63,30 @@ and the processed test graphs:
 python scripts/export_webapp.py
 ```
 
+### Your own function
+
+Served by Soren's own server, the same page also accepts a function you paste:
+
+```bash
+python -m soren.serve            # then open http://127.0.0.1:8000
+```
+
+**Try your own function** opens a box for one complete C or C++ function. On **Analyse** the
+server parses it with Joern, builds its control flow graph, and walks it with the trained agent
+and the declaring baselines; the result appears in the Function list marked `✎` and replays
+like any other. It takes about ten seconds, most of it Joern starting.
+
+- This needs [Joern](#joern) and a trained checkpoint
+  (`runs/final/base/seed1/best_model.zip` by default, or `--checkpoint`). Without a checkpoint
+  only the baselines run; without Joern the page still works on the saved functions.
+- There is no ground truth for pasted code, so a declaration is shown as the method's guess,
+  without a verdict, and the baselines that stop at the answer are unavailable.
+- Read the guess with the results above in mind: on the test set the agent's single
+  declaration is right about one time in five.
+- Limits: 20,000 characters, and between 3 and 298 statements after parsing.
+- The server listens on localhost only. It runs Joern on whatever is pasted, so do not
+  expose it to a network you do not trust.
+
 ### Terminal
 
 The same replay in a terminal, run live from the checkpoint:

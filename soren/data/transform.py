@@ -70,7 +70,7 @@ def limit_out_degree(record: GraphRecord, k: int) -> GraphRecord:
         project=record.project,
         commit_id=record.commit_id,
         cwe=record.cwe,
-    ).validate()
+    ).validate(labelled=bool(record.vuln_nodes))
 
 
 def shuffle_labels(record: GraphRecord, rng: np.random.Generator) -> GraphRecord:

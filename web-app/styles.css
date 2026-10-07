@@ -11,6 +11,7 @@
   --ok: #34c759;
   --bad: #ff5a52;
   --truth: #7a1fff;
+  --declared: #ff9f0a;
   --removed: #ffd9d6;
   --added: #d3f5db;
 
@@ -84,7 +85,7 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 #play { min-width: 76px; }
 
 @media (hover: hover) and (pointer: fine) {
-  button:hover, select:hover { background: var(--ink); color: var(--paper); }
+  button:hover:not(:disabled), select:hover { background: var(--ink); color: var(--paper); }
 }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
@@ -111,10 +112,25 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 .swatch.visited { background: var(--visited); }
 .swatch.ok { background: var(--ok); }
 .swatch.bad { background: var(--bad); }
+.swatch.declared { background: var(--declared); }
 .swatch.truth { border: 3px solid var(--truth); }
 .swatch.stack { border-width: 3px; }
 .swatch.removed { background: var(--removed); }
 .swatch.added { background: var(--added); }
+
+/* ------------------------------------------------------------------- paste */
+
+#paste { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--rule); border-left: 10px solid var(--ink); }
+.paste-note { margin: 6px 0 10px; max-width: 90ch; color: var(--muted); font-size: 13px; }
+.paste-note code { font: 12.5px var(--mono); color: var(--ink); }
+#paste textarea {
+  display: block; width: 100%; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 0;
+  background: var(--paper); color: var(--ink); font: 12.5px/1.55 var(--mono); resize: vertical; tab-size: 4;
+}
+.paste-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 10px; }
+#paste-status { margin: 0; font-size: 13px; }
+#paste-status.error { font-weight: 600; }
+button:disabled, textarea:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* --------------------------------------------------------------------- why */
 
@@ -149,6 +165,7 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 }
 .outcome.ok { border-left-color: var(--ok); }
 .outcome.bad { border-left-color: var(--bad); }
+.outcome.declared { border-left-color: var(--declared); }
 
 .views { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 #panels.two .views { grid-template-columns: 1fr; }
@@ -169,6 +186,7 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 .node.current rect { fill: var(--current); }
 .node.ok rect { fill: var(--ok); }
 .node.bad rect { fill: var(--bad); }
+.node.declared rect { fill: var(--declared); }
 .node.stack rect { stroke-width: 3; }
 .node.truth rect { stroke: var(--truth); stroke-width: 4; }
 .edge { fill: none; stroke: #9a9a9a; stroke-width: 1; }
@@ -182,6 +200,7 @@ output { min-width: 64px; font-variant-numeric: tabular-nums; text-align: right;
 .source li.current { background: var(--current); }
 .source li.ok { background: var(--ok); }
 .source li.bad { background: var(--bad); }
+.source li.declared { background: var(--declared); }
 .source li.truth { border-left-color: var(--truth); }
 
 /* ----------------------------------------------------------------- details */

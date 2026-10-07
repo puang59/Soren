@@ -19,54 +19,11 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from soren.baselines.heuristic import HeuristicScorer, make_baseline
-from soren.config import load_config, load_yaml
 from soren.data.schema import GraphRecord, read_jsonl
-from soren.env.cfg_nav_env import EnvConfig
-from soren.env.rewards import RewardConfig
 from soren.viz.explain import CWE_NAMES, fix_diff
-from soren.viz.render import action_labels
-from soren.viz.trace import Trace
-
-BASELINES = ("dfs", "bfs", "line_order", "heuristic_first")
-BASELINE_NAMES = {
-    "dfs": "Depth-first search",
-    "bfs": "Breadth-first search",
-    "line_order": "Line order",
-    "heuristic_first": "Heuristic-first",
-}
-DECLARES = "must declare"
-ORACLE = "stops at the answer"
-
-
-def trace_payload(graph: GraphRecord, trace: Trace) -> dict:
-    steps = []
-    for step in trace.steps:
-        entry = {
-            "node": step.node,
-            "next": step.next_node,
-            "action": step.action,
-            "reward": round(step.reward, 4),
-        }
-        if step.probs is not None:
-            labels = action_labels(graph, step.node, len(step.probs))
-            mask = step.mask or [True] * len(labels)
-            entry["options"] = [
-                {"label": label, "p": round(float(p), 4)}
-                for label, p, ok in zip(labels, step.probs, mask, strict=True)
-                if ok
-            ]
-            entry["value"] = round(float(step.value), 3)
-        steps.append(entry)
-    return {
-        "start": trace.start_node,
-        "steps": steps,
-        "success": bool(trace.outcome.get("success")),
-        "end_reason": trace.outcome.get("end_reason"),
-    }
+from soren.viz.webapp import graph_payload, load_methods
 
 
 def load_background(raw_dir: str, filtered: str) -> dict[str, dict]:
@@ -96,30 +53,15 @@ def load_background(raw_dir: str, filtered: str) -> dict[str, dict]:
     return background
 
 
-def graph_payload(graph: GraphRecord, background: dict) -> dict:
+def background_payload(graph: GraphRecord, background: dict) -> dict:
     info = background.get(graph.sample_id, {})
     return {
-        "id": graph.sample_id,
-        "project": graph.project,
-        "cwe": graph.cwe,
         "cwe_name": CWE_NAMES.get(graph.cwe, ""),
         "cve": info.get("cve", ""),
         "cve_url": info.get("cve_url", ""),
-        "commit": graph.commit_id,
         "commit_url": info.get("commit_url", ""),
         "commit_message": info.get("commit_message", ""),
         "fix": fix_diff(info["before"], info["after"]) if info.get("after") else [],
-        "source": graph.source_lines,
-        "nodes": [
-            {"id": n.id, "line": n.line, "kind": n.kind, "depth": n.depth, "code": n.code}
-            for n in graph.nodes
-        ],
-        "edges": [list(edge) for edge in graph.edges],
-        "back_edges": [list(edge) for edge in graph.back_edges],
-        "entry": graph.entry,
-        "exit": graph.exit,
-        "vulnerable": graph.vuln_nodes,
-        "traces": {},
     }
 
 
@@ -136,32 +78,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--filtered", default="data/interim/filtered.parquet", help="for the fix")
     args = parser.parse_args(argv)
 
-    env = load_config(EnvConfig, args.env_config, section="env")
-    reward = load_config(RewardConfig, args.env_config, section="reward")
-    thresholds = load_yaml(args.eval_config)["protocol_b"]["heuristic"]
-    scorer = HeuristicScorer()
-    # Declaring baselines first: they are the fair comparison for the agent.
-    searchers = {}
-    names = {}
-    info = {}
-    for name in BASELINES:
-        declaring = make_baseline(name, env, reward, scorer, thresholds[name])
-        searchers[declaring.name] = declaring
-        names[declaring.name] = f"{BASELINE_NAMES[name]} ({DECLARES})"
-        info[declaring.name] = {"rule": "threshold", "threshold": thresholds[name]}
-    for name in BASELINES:
-        searchers[name] = make_baseline(name, env, reward)
-        names[name] = f"{BASELINE_NAMES[name]} ({ORACLE})"
-        info[name] = {"rule": "oracle"}
-    if Path(args.checkpoint).is_file():
-        from soren.agents.searcher import PolicySearcher
-        from soren.agents.train import load_model
-
-        policy = PolicySearcher(load_model(args.checkpoint), env, reward, name="ppo")
-        searchers = {"ppo": policy, **searchers}
-        names["ppo"] = "PPO agent"
-        info["ppo"] = {"rule": "policy"}
-    else:
+    methods = load_methods(args.checkpoint, args.env_config, args.eval_config)
+    if "ppo" not in methods.searchers:
         print(f"no checkpoint at {args.checkpoint}; exporting baselines only")
 
     graphs = [
@@ -172,24 +90,17 @@ def main(argv: list[str] | None = None) -> None:
     background = load_background(args.raw, args.filtered)
     episodes = []
     for graph in graphs:
-        payload = graph_payload(graph, background)
-        payload["scores"] = [round(float(score), 3) for score in scorer.scores(graph)]
-        budget = env.max_steps_for(graph.num_nodes)
-        for name, searcher in searchers.items():
-            trace = searcher.trace(graph, budget, np.random.default_rng(0))
-            payload["traces"][name] = trace_payload(graph, trace)
+        payload = graph_payload(graph, methods.scorer)
+        payload.update(background_payload(graph, background))
+        payload["traces"] = methods.traces(graph)
         episodes.append(payload)
 
-    data = {
-        "methods": {name: names[name] for name in searchers},
-        "method_info": {name: info[name] for name in searchers},
-        "episodes": episodes,
-    }
+    data = {**methods.header(), "episodes": episodes}
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     # A script that sets a global, so the page also works when opened straight from disk.
     out.write_text("window.SOREN_DATA = " + json.dumps(data, separators=(",", ":")) + ";\n")
-    print(f"wrote {len(episodes)} functions x {len(searchers)} methods to {out}")
+    print(f"wrote {len(episodes)} functions x {len(methods.searchers)} methods to {out}")
     print(f"{out.stat().st_size / 1e6:.1f} MB")
 
 
