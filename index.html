@@ -85,7 +85,17 @@ walking the function's control flow graph. This document explains how the system
 exactly how it uses reinforcement learning, where each piece lives in the code, and what is
 new about it.
 
-All file paths are relative to the repository root. Line numbers refer to the `main` branch.
+All file paths are relative to the repository root. Line numbers refer to the `main-v2` branch.
+
+> **Version 2: the learning parts are now our own code.** The first version trained with
+> `MaskablePPO` from the `sb3-contrib` library on top of PyTorch and Gymnasium. In version 2
+> every part that does the learning or the statistics is written by hand in NumPy: the
+> neural network and its backpropagation, the Adam optimiser, the masked softmax, the rollout
+> buffer, GAE, the PPO loss and its gradient, reward normalisation, the bootstrap, McNemar's
+> and Wilcoxon's tests, and the graph algorithms. The only dependencies left are NumPy,
+> pandas, PyArrow, PyYAML and Matplotlib. The agent was retrained with this code and scores
+> the same as the library version (section 11). With `--explain`, every formula is printed
+> with the actual numbers in the terminal (section 5, "Seeing the calculations").
 
 ---
 
@@ -142,8 +152,8 @@ flowchart TD
     G --> H[("GraphRecord files<br/>train / val / test")]
 
     subgraph ONLINE["Reinforcement learning"]
-        H --> I["CFGNavEnv<br/>Gymnasium environment"]
-        I <-->|"observation, reward<br/>action"| J["MaskablePPO agent<br/>actor + critic networks"]
+        H --> I["CFGNavEnv<br/>environment (reset / step)"]
+        I <-->|"observation, reward<br/>action"| J["PPO agent, own NumPy code<br/>actor + critic networks"]
         H --> K["Baselines<br/>DFS, BFS, line order,<br/>heuristic-first"]
     end
 
@@ -159,9 +169,11 @@ flowchart TD
 | Features | 30 numbers per statement | `soren/data/features.py` |
 | Environment | The world the agent acts in | `soren/env/cfg_nav_env.py` |
 | Reward | Points for each outcome | `soren/env/rewards.py` |
-| Agent | PPO configuration, training loop, callbacks | `soren/agents/` |
+| Neural network library | Layers, backpropagation, Adam, masked softmax, written in NumPy | `soren/nn/` |
+| Agent | Actor-critic network, rollout buffer, GAE, PPO loss and update, training loop | `soren/agents/` |
 | Baselines | Non-learning search methods | `soren/baselines/` |
-| Evaluation | Metrics, statistics, final test run | `soren/eval/`, `scripts/final_evaluation.py` |
+| Evaluation | Metrics, bootstrap, McNemar and Wilcoxon tests, final test run | `soren/eval/`, `scripts/final_evaluation.py` |
+| Explanations | Prints each formula with its numbers; a 9-part walkthrough of one episode | `soren/mathlog.py`, `soren/walkthrough.py` |
 | Visualizer | Static web page replaying episodes | `web-app/` |
 
 **Design principle.** Everything after the data pipeline reads only `GraphRecord`. That let
@@ -209,7 +221,7 @@ The 30 per-statement features (`soren/data/features.py`):
   allocates, frees, indexes an array, dereferences a pointer, pointer arithmetic, arithmetic,
   comparison, `sizeof`, cast, mentions a length-like variable, token count.
 
-Building the observation, `soren/env/cfg_nav_env.py:279`:
+Building the observation, `soren/env/cfg_nav_env.py:298`:
 
 ```python
 # 3. Successor slots: [valid, features, visited_before, is_back_edge].
@@ -232,7 +244,7 @@ Eight discrete actions:
 | 7 | `DECLARE` | Say "this statement is the vulnerability" |
 
 A statement rarely has six successors, so most actions are invalid most of the time. The
-environment reports which are valid, `soren/env/cfg_nav_env.py:138`:
+environment reports which are valid, `soren/env/cfg_nav_env.py:142`:
 
 ```python
 def action_masks(self) -> np.ndarray:
@@ -253,7 +265,7 @@ def action_masks(self) -> np.ndarray:
 ### Transitions
 
 Deterministic: a move goes exactly where the edge points. The core of
-`CFGNavEnv.step()`, `soren/env/cfg_nav_env.py:204`:
+`CFGNavEnv.step()`, `soren/env/cfg_nav_env.py:210`:
 
 ```python
 elif action < self.config.k:                       # MOVE_i
@@ -287,21 +299,25 @@ else:                                              # DECLARE
 | Declaring any other statement | **−0.5** |
 | Step budget exhausted | −0.5 |
 
-The whole reward function, `soren/env/rewards.py:53`:
+The whole reward function, `soren/env/rewards.py:53`. It returns the named parts, so the
+explanation can print a reward as a sum such as `step(-0.01) + revisit(-0.02) = -0.030`:
 
 ```python
-def base_reward(event: StepEvent, cfg: RewardConfig) -> float:
-    """The unshaped reward for one step."""
-    reward = 0.0
+def reward_terms(event: StepEvent, cfg: RewardConfig) -> list[tuple[str, float]]:
+    terms: list[tuple[str, float]] = []
     if event.action == "declare":
-        reward += cfg.correct if event.correct else cfg.wrong
+        terms.append(("correct", cfg.correct) if event.correct else ("wrong", cfg.wrong))
     else:
-        reward += cfg.step
+        terms.append(("step", cfg.step))
         if event.action == "move" and event.revisit:
-            reward += cfg.revisit
+            terms.append(("revisit", cfg.revisit))
     if event.timeout or event.dead_end:
-        reward += cfg.timeout
-    return reward
+        terms.append(("timeout" if event.timeout else "dead_end", cfg.timeout))
+    return terms
+
+
+def base_reward(event: StepEvent, cfg: RewardConfig) -> float:
+    return sum(value for _, value in reward_terms(event, cfg))
 ```
 
 The values are in `configs/env.yaml`. The small step cost makes short searches preferable;
@@ -332,7 +348,7 @@ An episode ends when the agent declares, or after `min(200, 4 × number of state
 | **Advantage A(s, a)** | How much better an action turned out than the critic expected; this is what pushes the policy |
 | **Model of the environment** | None. The method is **model-free** |
 | **Planning / MCTS** | **Not used.** See section 10 |
-| **Deep RL** | Yes: policy and value function are neural networks trained by gradient descent |
+| **Deep RL** | Yes: policy and value function are neural networks trained by gradient descent. Both networks, their gradients and the optimiser are our own NumPy code |
 | **Exploration** | Sampling from the policy during training, encouraged by an entropy bonus |
 | **On-policy / off-policy** | On-policy: each batch of experience is used for one update and discarded |
 
@@ -346,43 +362,105 @@ functions:
 - the **actor** π_θ(a | s), which chooses actions;
 - the **critic** V_φ(s), which estimates how good a state is.
 
-Soren uses `MaskablePPO` from the `sb3-contrib` library, which is PPO plus support for
-invalid-action masks.
+Soren's PPO is written from scratch in NumPy, in `soren/agents/`. Each step below names the
+function that does it. The maths is the same as in the PPO paper (Schulman et al., 2017) and
+the masking is the same as in `MaskablePPO`, which the first version used.
+
+| Piece | File |
+|---|---|
+| Training loop: collect, then update | `soren/agents/ppo.py` (`PPO.learn`, `collect_rollouts`, `train`) |
+| PPO loss and its gradient, derived by hand | `soren/agents/ppo.py` (`ppo_loss`) |
+| Rollout storage and GAE | `soren/agents/buffer.py` (`RolloutBuffer`, `compute_gae`) |
+| Actor and critic networks | `soren/agents/policy.py` (`ActorCritic`) |
+| 16 environments stepped together, reward normalisation | `soren/agents/vec_env.py` |
+| Layers, backpropagation, Adam, gradient clipping, masked softmax | `soren/nn/` |
 
 ### Step 1: collect experience
 
 Run the current policy in 16 environments for 512 steps each. That gives 8,192 transitions
 (s, a, r, s′), each with the critic's V(s) and the probability the actor gave the action.
+`PPO.collect_rollouts`, `soren/agents/ppo.py:343`:
+
+```python
+for t in range(cfg.n_steps):
+    masks = venv.action_masks()
+    actions, log_p, values = policy.act(self._obs, masks, self.rng)
+    next_obs, rewards, dones, infos = venv.step(actions)
+    rewards = self.normalizer(rewards, dones)
+    for i, info in enumerate(infos):
+        if dones[i] and info.get("truncated"):
+            # Out of steps, not a real ending: add the value the episode still had.
+            rewards[i] += cfg.gamma * policy.value(info["terminal_observation"])
+    self.buffer.add(t, self._obs, masks, actions, log_p, values, rewards, dones)
+    self._obs = next_obs
+```
+
+Two details:
+
+- **Sampling.** `policy.act` turns the probabilities into an action by inverse transform
+  sampling: draw u uniformly from [0, 1) and take the first action whose cumulative
+  probability exceeds u (`soren/nn/distributions.py:37`).
+- **Reward normalisation.** Rewards are divided by the running standard deviation of the
+  discounted return, so the value targets stay in a steady range. They are only scaled,
+  never shifted, so the best policy does not change (`RewardNormalizer`,
+  `soren/agents/vec_env.py:91`):
+
+```
+G ← γ·G + r                          running discounted return of each environment
+r̃ = clip( r / √(Var[G] + ε), −10, 10 )
+```
 
 ### Step 2: estimate advantages with GAE
 
 For each transition compute the one-step surprise (the TD error):
 
 ```
-δ_t = r_t + γ · V(s_{t+1}) − V(s_t)
+δ_t = r_t + γ · V(s_{t+1}) · (1 − done_t) − V(s_t)
 ```
 
-Then the Generalized Advantage Estimate is a discounted sum of these:
+Then the Generalized Advantage Estimate is a discounted sum of these, computed backwards from
+the last step:
 
 ```
-A_t = δ_t + (γλ) · δ_{t+1} + (γλ)² · δ_{t+2} + ...        with γ = 0.99, λ = 0.95
+A_t = δ_t + γλ · (1 − done_t) · A_{t+1}        with γ = 0.99, λ = 0.95
 ```
 
 This is where V(s) and Q(s, a) meet: `A_t` estimates Q(s_t, a_t) − V(s_t) without ever
 learning Q. The value target for the critic is `R_t = A_t + V(s_t)`.
+`compute_gae`, `soren/agents/buffer.py:25`:
+
+```python
+for t in reversed(range(n_steps)):
+    next_value = last_values if t == n_steps - 1 else values[t + 1]
+    alive = 1.0 - dones[t]
+    delta = rewards[t] + gamma * next_value * alive - values[t]
+    advantages[t] = next_advantage = delta + gamma * lam * alive * next_advantage
+return advantages, advantages + values
+```
+
+In plain words: the advantage is "what actually happened minus what the critic expected".
+A positive advantage means the action turned out better than expected, so it should become
+more likely.
 
 ### Step 3: update both networks by gradient descent
+
+The rollout is shuffled into minibatches of 512 and passed over 10 times. For each minibatch,
+the advantages are first normalised, because only their relative size matters:
+
+```
+Â_t = (A_t − mean(A)) / (std(A) + 10⁻⁸)
+```
 
 The probability ratio between the new and old policy:
 
 ```
-ρ_t(θ) = π_θ(a_t | s_t) / π_θ_old(a_t | s_t)
+r_t(θ) = π_θ(a_t | s_t) / π_θ_old(a_t | s_t) = exp( log π_θ(a_t | s_t) − log π_θ_old(a_t | s_t) )
 ```
 
 **Policy (actor) loss**, the clipped surrogate objective:
 
 ```
-L_policy = − mean( min( ρ_t · A_t ,  clip(ρ_t, 1 − ε, 1 + ε) · A_t ) )        ε = 0.2
+L_policy = − mean( min( r_t · Â_t ,  clip(r_t, 1 − ε, 1 + ε) · Â_t ) )        ε = 0.2
 ```
 
 The clip is what "proximal" means: if an update would change an action's probability by more
@@ -398,7 +476,7 @@ L_value = mean( (V_φ(s_t) − R_t)² )
 **Entropy bonus**, which rewards the policy for staying uncertain and therefore exploring:
 
 ```
-H = mean( entropy of π_θ(· | s_t) )
+H = mean( − Σ_a π(a | s_t) · log π(a | s_t) )
 ```
 
 **Total loss minimised:**
@@ -407,51 +485,150 @@ H = mean( entropy of π_θ(· | s_t) )
 L = L_policy + 0.5 · L_value − 0.01 · H
 ```
 
-Gradients of `L` are computed by backpropagation through both networks, clipped to a norm of
-0.5, and applied with the **Adam** optimiser.
+`ppo_loss`, `soren/agents/ppo.py:109`, the forward part:
+
+```python
+adv = (raw_adv - raw_adv.mean()) / (raw_adv.std() + 1e-8)
+log_p_all = policy.log_probs(obs, masks)
+p = np.exp(log_p_all)
+log_p = log_p_all[rows, actions]
+ratio = np.exp(log_p - old_log_p)
+clipped = np.clip(ratio, 1.0 - clip_range, 1.0 + clip_range)
+policy_loss = -np.minimum(ratio * adv, clipped * adv).mean()
+h = entropy(log_p_all)
+values = policy.values(obs)
+value_loss = np.mean((returns - values) ** 2)
+loss = policy_loss - ent_coef * h.mean() + vf_coef * value_loss
+```
+
+### Step 4: the gradient, derived by hand
+
+There is no automatic differentiation. The derivative of the loss with respect to the
+actor's 8 outputs (the logits z) and the critic's output V was worked out on paper. Per
+sample, divided by the batch size B:
+
+```
+∂L_clip / ∂log π(a)  = −r·Â   if the unclipped term is the smaller one, otherwise 0
+∂log π(a) / ∂z_j     = 1[j = a] − p_j                  (derivative of log-softmax)
+∂(−H) / ∂z_j         = p_j · (log p_j + H)
+∂L / ∂V              = 0.5 · 2 · (V − R)
+```
+
+The same in code, `soren/agents/ppo.py:158`:
+
+```python
+unclipped_active = ratio * adv <= clipped * adv
+d_log_p = np.where(unclipped_active, -ratio * adv, 0.0) / size
+d_logits = d_log_p[:, None] * (one_hot - p)
+d_logits += ent_coef * p * (safe_log_p + h[:, None]) / size
+d_logits[~masks] = 0.0          # masked logits are constants, not network outputs
+policy.actor.backward(d_logits)
+policy.critic.backward((vf_coef * 2.0 * (values - returns) / size)[:, None])
+```
+
+Each network then backpropagates through its layers with the chain rule
+(`soren/nn/layers.py`):
+
+```
+Linear  y = x·W + b      ∂L/∂W = xᵀ·g,   ∂L/∂b = Σ g,   ∂L/∂x = g·Wᵀ
+tanh    y = tanh(x)      ∂L/∂x = g · (1 − y²)
+```
+
+`tests/test_nn.py` checks every one of these against a numerical gradient,
+(L(θ + h) − L(θ − h)) / 2h, including the full PPO loss through both networks.
+
+### Step 5: clip the gradient and take an Adam step
+
+All gradients together are scaled down if their combined length is above 0.5
+(`clip_grad_norm`, `soren/nn/optim.py:67`):
+
+```
+‖g‖ = √( Σ g² )          if ‖g‖ > 0.5:  g ← g · 0.5 / ‖g‖
+```
+
+Then **Adam** updates every weight θ (`Adam.step`, `soren/nn/optim.py:47`):
+
+```
+m ← β₁·m + (1 − β₁)·g                 running mean of the gradient        β₁ = 0.9
+v ← β₂·v + (1 − β₂)·g²                running mean of its square          β₂ = 0.999
+m̂ = m / (1 − β₁ᵗ),   v̂ = v / (1 − β₂ᵗ)  bias correction for the first steps
+θ ← θ − lr · m̂ / (√v̂ + ε)             lr = 3×10⁻⁴ falling linearly to 0,  ε = 10⁻⁵
+```
+
+The division by √v̂ gives every weight its own step size: weights with consistently large
+gradients take smaller steps.
 
 ### Action masking
 
-Before sampling, the logits of invalid actions are set to a very large negative number, so
-their probability is zero. The agent can never try to move to a successor that does not
-exist. Without this the agent would waste most of its early training discovering which of the
-8 actions are legal in each state.
+Before the softmax, the logits of invalid actions are replaced with −10⁸, so their
+probability is zero (`soren/nn/distributions.py:20`):
+
+```python
+def masked_logits(logits, mask):
+    return np.where(mask, logits, -1e8)
+
+def log_softmax(z):
+    shifted = z - z.max(axis=-1, keepdims=True)    # subtracting the max avoids overflow
+    return shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
+```
+
+The agent can never try to move to a successor that does not exist. Without this the agent
+would waste most of its early training discovering which of the 8 actions are legal in each
+state. Masked logits are constants, so their gradient is set to zero.
 
 ### Where this is configured
 
-`soren/agents/ppo.py:87`:
+`PPOConfig`, `soren/agents/ppo.py:48`, with the values from `configs/ppo.yaml`:
 
-```python
-def build_model(venv, cfg, seed=0, tensorboard_log=None) -> MaskablePPO:
-    return MaskablePPO(
-        "MlpPolicy",
-        venv,
-        n_steps=cfg.n_steps,                 # 512 steps per environment per rollout
-        batch_size=cfg.batch_size,           # 512 transitions per gradient step
-        n_epochs=cfg.n_epochs,               # 10 passes over each rollout
-        learning_rate=learning_rate_schedule(cfg),
-        gamma=cfg.gamma,                     # 0.99
-        gae_lambda=cfg.gae_lambda,           # 0.95
-        clip_range=cfg.clip_range,           # 0.2
-        ent_coef=cfg.ent_coef,               # 0.01
-        vf_coef=cfg.vf_coef,                 # 0.5
-        max_grad_norm=cfg.max_grad_norm,     # 0.5
-        policy_kwargs={
-            "net_arch": {"pi": list(cfg.net_arch), "vf": list(cfg.net_arch)},
-            "activation_fn": _ACTIVATIONS[cfg.activation],
-        },
-        ...
-    )
+| Setting | Value | Meaning |
+|---|---|---|
+| `n_envs` | 16 | Environments run side by side |
+| `n_steps` | 512 | Steps per environment per rollout |
+| `batch_size` | 512 | Transitions per gradient step |
+| `n_epochs` | 10 | Passes over each rollout |
+| `learning_rate` | 3 × 10⁻⁴, linear decay | Adam step size |
+| `gamma` | 0.99 | Discount factor γ |
+| `gae_lambda` | 0.95 | GAE λ |
+| `clip_range` | 0.2 | PPO clip ε |
+| `ent_coef` | 0.01 | Entropy bonus weight |
+| `vf_coef` | 0.5 | Value loss weight |
+| `max_grad_norm` | 0.5 | Gradient clipping threshold |
+| `adam_eps` | 10⁻⁵ | Adam's ε |
+| `net_arch` | [256, 256], tanh | Hidden layers of each network |
+
+These are the same values the library version used.
+
+### Seeing the calculations
+
+Every formula above can be printed with the actual numbers:
+
+```bash
+python -m soren.walkthrough                     # 9 parts: one function from code to statistics
+python -m soren.walkthrough --part 8            # only "how PPO learns"
+python scripts/train.py --explain --explain-every 10      # full calculation every 10th update
+python scripts/final_evaluation.py --allow-test --runs runs/v2 --out <dir> --explain
 ```
 
-The values come from `configs/ppo.yaml`. (The comments above are added here for explanation.)
+The walkthrough's parts are: 1 the function, 2 its control flow graph (BFS depths, DFS back
+edges, Kosaraju's strongly connected components), 3 the 30 features of one statement, 4 the
+248-number observation, 5 one decision (layers, logits, mask, softmax, V(s)), 6 the whole
+episode with each reward, 7 the return, 8 how PPO learns (TD errors, GAE, ratio, clip, loss,
+gradient clipping, Adam), 9 the statistics (bootstrap, McNemar, Wilcoxon). The output looks
+like this:
+
+```
+   advantage   A_t = δ_t + γλ·(1 − done)·A_{t+1}
+               = -0.108 + 0.99×0.95×1×0.042
+               = -0.068
+```
 
 ---
 
 ## 6. The neural network
 
-Two separate multilayer perceptrons with no shared layers. This is the actual structure of the
-trained checkpoint.
+Two separate multilayer perceptrons with no shared layers, `ActorCritic` in
+`soren/agents/policy.py`, built from the layers in `soren/nn/layers.py`. This is the actual
+structure of the trained checkpoint (`best_model.npz`, a plain NumPy file of the weights).
 
 ```mermaid
 flowchart LR
@@ -490,7 +667,23 @@ flowchart LR
   π(a | s). During training an action is *sampled* from them; at test time the most probable
   valid action is taken.
 - **Critic output:** a single number, V(s).
-- **Optimiser:** Adam, learning rate 3 × 10⁻⁴ decaying linearly to zero over training.
+- **Initialisation:** orthogonal weight matrices (Saxe et al., 2014), built from a QR
+  decomposition of a random matrix, with gain √2 for hidden layers, 0.01 for the actor's
+  output and 1 for the critic's output. Biases start at zero. The small actor gain makes all
+  valid actions about equally likely at the start, so the agent explores before it has
+  learned anything.
+- **Optimiser:** Adam, learning rate 3 × 10⁻⁴ decaying linearly to zero over training
+  (section 5, step 5).
+
+One forward pass of the actor, which part 5 of the walkthrough prints with real numbers:
+
+```
+h₁ = tanh(x·W₁ + b₁)          248 → 256
+h₂ = tanh(h₁·W₂ + b₂)         256 → 256
+z  = h₂·W₃ + b₃               256 → 8 logits
+z_masked = z where valid, −10⁸ elsewhere
+π(a | s) = exp(z_a) / Σ_j exp(z_j)
+```
 
 Why a plain MLP and not a graph neural network: the observation is already a fixed-length
 vector describing the local neighbourhood, so no graph encoder is needed for the agent to act.
@@ -508,7 +701,7 @@ flowchart TD
     D --> E{"50,000 more<br/>timesteps done?"}
     E -->|yes| F["Evaluate on all 128<br/>validation functions"]
     F --> G{"Best success<br/>rate so far?"}
-    G -->|yes| H["Save best_model.zip"]
+    G -->|yes| H["Save best_model.npz"]
     G -->|no| I["Continue"]
     H --> I
     E -->|no| I
@@ -531,114 +724,129 @@ flowchart TD
 | Total timesteps | 1,007,616 (123 rollouts) |
 | Total gradient steps | about 19,700 |
 | Validation evaluations | 21 (every 50,000 timesteps) |
-| Wall-clock time | about 4 minutes on a laptop CPU |
+| Wall-clock time | about 5 minutes per run on a laptop CPU (about 3,300 timesteps per second) |
 | Seeds | 5 independent runs |
 
 ### Training metrics
 
-All of these come from the saved runs of the final configuration
-(`runs/final/base/seed0` to `seed4`, summarised in `experiments/final/README.md`).
+All of these come from the saved runs of the final configuration, trained with Soren's own
+PPO (`runs/v2/final/base/seed0` to `seed4`). Every run writes `train_log.csv`, one row per
+update, and `val_history.json`.
 
 **Validation success during training, all five seeds.** Every 50,000 timesteps the policy is
 run once on each of the 128 validation functions.
 
 | Timesteps | Success, mean of 5 seeds | Lowest and highest seed | Statements inspected | Return |
 |---|---|---|---|---|
-| 50,000 | 13.8% | 10.9% to 15.6% | 2.9 | −0.32 |
-| 100,000 | 15.8% | 13.3% to 18.8% | 3.2 | −0.30 |
-| 200,000 | 16.3% | 14.8% to 19.5% | 3.5 | −0.29 |
-| 400,000 | 17.8% | 16.4% to 18.8% | 3.8 | −0.26 |
-| 600,000 | 16.3% | 15.6% to 18.0% | 3.9 | −0.29 |
-| 800,000 | 16.6% | 15.6% to 18.0% | 4.0 | −0.29 |
-| 1,000,000 | 16.6% | 15.6% to 18.0% | 4.1 | −0.29 |
+| 50,000 | 13.9% | 13.3% to 14.1% | 2.7 | −0.32 |
+| 100,000 | 15.5% | 11.7% to 19.5% | 3.1 | −0.32 |
+| 200,000 | 15.6% | 13.3% to 18.0% | 3.5 | −0.30 |
+| 400,000 | 17.5% | 14.8% to 20.3% | 4.0 | −0.28 |
+| 600,000 | 15.5% | 14.1% to 17.2% | 3.8 | −0.31 |
+| 800,000 | 15.5% | 14.1% to 16.4% | 3.8 | −0.30 |
+| 1,000,000 | 16.2% | 14.1% to 18.0% | 3.8 | −0.29 |
 
 Validation success rises for the first 400,000 timesteps and then stays flat. A random guess
-scores 13.6% on these functions. In all five seeds, at every evaluation, 80 to 89% of episodes
-ended in a wrong declaration and at most 3% ran out of steps: the agent nearly always commits
-to an answer, usually after four or five actions.
+scores 13.6% on these functions. In all five seeds, at every evaluation, 78 to 88% of episodes
+ended in a wrong declaration and at most 2.3% ran out of steps: the agent nearly always
+commits to an answer, usually after four or five actions.
 
 **Best checkpoint of each seed.**
 
 | Seed | Best checkpoint at | Validation success | Success on 300 training functions | Actions in a successful episode | Test success |
 |---|---|---|---|---|---|
-| 0 | 400,000 | 18.8% | 47.3% | 3.4 | 23.6% |
-| 1 | 300,000 | 20.3% | 54.3% | 5.5 | 24.4% |
-| 2 | 500,000 | 17.2% | 52.0% | 4.0 | 15.7% |
-| 3 | 400,000 | 18.8% | 52.0% | 4.5 | 21.3% |
-| 4 | 900,000 | 17.2% | 55.3% | 4.1 | 20.5% |
-| **Mean** | | **18.4% ± 1.2** | **52.2%** | **4.3** | **21.1% ± 3.1** |
+| 0 | 300,000 | 19.5% | 53.0% | 4.4 | 22.0% |
+| 1 | 350,000 | 21.1% | 52.0% | 4.9 | 23.6% |
+| 2 | 950,000 | 17.2% | 52.7% | 4.0 | 18.1% |
+| 3 | 950,000 | 17.2% | 57.7% | 4.6 | 20.5% |
+| 4 | 250,000 | 19.5% | 49.7% | 4.4 | 23.6% |
+| **Mean** | | **18.9% ± 1.5** | **53.0%** | **4.4** | **21.6% ± 2.1** |
 
 The validation column is the one the checkpoint was chosen on, so it is biased upward by
 about 4 points (section 12). The test column is not.
 
-**Inside one training run.** The final runs were made with logging off, so seed 1 was run
-again with the same settings and logging on (`runs/final_logged/base/seed1`). Its validation
-history is identical to the original run at all 21 evaluations.
+**Inside one training run (seed 1).**
 
 | Metric | 16k | 100k | 250k | 500k | 750k | 1M |
 |---|---|---|---|---|---|---|
-| Training episodes ending in a correct declaration | 32.8% | 39.1% | 48.0% | 53.3% | 55.4% | 56.2% |
-| Validation success | 13.3% (at 50k) | 18.8% | 19.5% | 16.4% | 17.2% | 17.2% |
-| Mean episode length, in actions | 4.3 | 3.8 | 4.1 | 4.6 | 4.8 | 3.9 |
-| Policy entropy | 0.76 | 0.54 | 0.21 | 0.11 | 0.06 | 0.07 |
-| Value loss | 3.02 | 2.26 | 1.61 | 1.24 | 1.05 | 0.99 |
-| Explained variance of the critic | −0.03 | 0.33 | 0.50 | 0.63 | 0.69 | 0.72 |
-| Approximate KL per update | 0.006 | 0.008 | 0.005 | 0.004 | 0.002 | 0.000 |
-| Clip fraction | 4.2% | 8.9% | 3.8% | 2.9% | 1.8% | 0.0% |
-| Learning rate | 2.98 × 10⁻⁴ | 2.73 × 10⁻⁴ | 2.26 × 10⁻⁴ | 1.53 × 10⁻⁴ | 0.76 × 10⁻⁴ | 0 |
-| Share of actions: move | 57% | 65% | 73% | 77% | 78% | 77% |
-| Share of actions: backtrack | 20% | 9% | 2% | 2% | 1% | 1% |
-| Share of actions: declare | 23% | 27% | 25% | 21% | 21% | 22% |
+| Training episodes ending in a correct declaration | 32.0% | 38.3% | 44.8% | 52.0% | 53.3% | 51.5% |
+| Validation success | 14.1% (at 57k) | 19.5% | 19.5% | 18.8% | 16.4% | 17.2% |
+| Policy entropy | 0.76 | 0.51 | 0.21 | 0.11 | 0.09 | 0.08 |
+| Value loss | 2.84 | 2.25 | 1.46 | 1.06 | 0.91 | 0.93 |
+| Explained variance of the critic | 0.19 | 0.31 | 0.53 | 0.67 | 0.71 | 0.71 |
+| Approximate KL per update | 0.005 | 0.005 | 0.003 | 0.003 | 0.002 | 0.000 |
+| Clip fraction | 5.4% | 7.3% | 3.9% | 2.8% | 2.2% | 0.0% |
+| Gradient norm before clipping | 0.96 | 0.96 | 1.20 | 1.16 | 1.05 | 1.06 |
+| Learning rate | 2.95 × 10⁻⁴ | 2.71 × 10⁻⁴ | 2.24 × 10⁻⁴ | 1.50 × 10⁻⁴ | 0.74 × 10⁻⁴ | 0 |
+| Share of actions: move | 57% | 64% | 69% | 71% | 71% | 71% |
+| Share of actions: backtrack | 21% | 7% | 4% | 2% | 1% | 1% |
+| Share of actions: declare | 22% | 29% | 28% | 27% | 28% | 28% |
 
-Training throughput was about 9,000 timesteps per second on a laptop CPU.
+The approximate KL and explained variance are computed as
+
+```
+KL ≈ mean( (r − 1) − log r )                 how far the policy moved in one update
+EV = 1 − Var(R − V) / Var(R)                 1 = the critic predicts perfectly, 0 = no better than the mean
+```
 
 **How to read these.**
 
 - **The optimisation is healthy.** Value loss falls, the critic's explained variance climbs
-  from 0 to 0.72, entropy falls smoothly as the policy becomes decisive, and the KL and clip
-  fraction stay small, so updates never jump. Nothing here looks like a broken training run.
-- **The agent overfits.** Success on training functions keeps rising to 56%, while success on
-  validation functions peaks near 20% by 250,000 timesteps and then drifts down. After that
-  point the agent is memorising the functions it trains on, not learning something that
-  carries over. This is why the best checkpoint is early (300,000 to 500,000 in four of five
-  seeds) and why checkpoints are chosen on validation.
-- **It learns not to backtrack.** Backtracking falls from 20% of actions to 1%. The learned
+  to 0.71, entropy falls smoothly as the policy becomes decisive, and the KL and clip
+  fraction stay small, so updates never jump. The curves have the same shape as the
+  library version's, which is a check that the hand-written gradient is right.
+- **The agent overfits.** Success on training functions keeps rising past 50%, while success
+  on validation functions peaks near 20% between 100,000 and 400,000 timesteps and then
+  drifts down. After that point the agent is memorising the functions it trains on, not
+  learning something that carries over. This is why checkpoints are chosen on validation.
+- **It learns not to backtrack.** Backtracking falls from 21% of actions to 1%. The learned
   behaviour is a short walk forward followed by one declaration.
 
 ### The training loop in code
 
-`soren/agents/train.py:70`:
+`soren/agents/train.py:73`:
 
 ```python
 venv = make_vec_env(train_graphs, env_config, reward_config, ppo_config, seed, curriculum)
-try:
-    model = build_model(
-        venv, ppo_config, seed, tensorboard_log=str(run_dir / "tb") if tensorboard else None
-    )
-    validation = ValidationCallback(
-        val_graphs, env_config, reward_config, ppo_config.eval_freq, run_dir
-    )
-    callbacks = CallbackList([validation, DiagnosticsCallback(env_config.k)])
-    model.learn(total_timesteps=ppo_config.total_timesteps, callback=callbacks)
+model = PPO(venv, ppo_config, seed)
+model.explain_every = explain_every
+validation = ValidationCallback(
+    val_graphs, env_config, reward_config, ppo_config.eval_freq, run_dir, verbose
+)
+callbacks = [validation, DiagnosticsCallback(env_config.k), ProgressLog(run_dir, verbose)]
+model.learn(total_timesteps=ppo_config.total_timesteps, callbacks=callbacks)
+```
+
+And the loop inside `PPO.learn`, `soren/agents/ppo.py:318`: collect a rollout, then update.
+
+```python
+while self.num_timesteps < total_timesteps:
+    self.updates += 1
+    if not self.collect_rollouts(callbacks, explain):
+        break
+    self.train(explain)
+    for cb in callbacks:
+        cb.on_update_end(self)
 ```
 
 Each of the 16 environments samples a random training function at the start of every episode
-(`CFGNavEnv.reset`, `soren/env/cfg_nav_env.py:178`). Rewards are normalised by a running
-estimate during training (`VecNormalize`, `soren/agents/ppo.py:59`); observations are already
-in [0, 1].
+(`CFGNavEnv.reset`, `soren/env/cfg_nav_env.py:182`). Environment i is seeded with seed + i
+(`VecEnv`, `soren/agents/vec_env.py:18`). Rewards are normalised during training (section 5,
+step 1); observations are already in [0, 1].
 
 ### Choosing the checkpoint
 
 Training does not simply keep the last network. Every 50,000 timesteps the policy is run once
 on every validation function, and the best one is saved,
-`soren/agents/callbacks.py:46`:
+`soren/agents/callbacks.py:57`:
 
 ```python
 key = (metrics["success_rate"], -metrics["nodes_inspected"])
-if self.best_key is None or key > self.best_key:
+improved = self.best_key is None or key > self.best_key
+if improved:
     self.best_key = key
     self.best_metrics = metrics
-    self.model.save(self.run_dir / "best_model")
+    model.save(self.run_dir / "best_model.npz")
 ```
 
 The test set plays no part in this. It is evaluated once, at the end.
@@ -647,7 +855,11 @@ The test set plays no part in this. It is evaluated once, at the end.
 
 ```bash
 python scripts/run_arm.py --group final --name base --seed 0 --timesteps 1000000
+python scripts/train.py --explain --explain-every 10     # print the calculations while training
 ```
+
+Training prints one line per update (success, losses, entropy, KL, explained variance,
+learning rate) and a validation line every 50,000 timesteps.
 
 ---
 
@@ -666,13 +878,14 @@ on. It is a buffer overflow: `memcpy` copies `l` bytes with no bounds check.
 ...
 ```
 
-The trained agent's sequence of actions, with its own probabilities:
+The trained agent's sequence of actions (seed 1, the checkpoint the web visualizer uses), with
+its own probabilities:
 
 | Step | Standing on | What the actor output | Action taken | Reward |
 |---|---|---|---|---|
 | 1 | ENTRY | move to line 3: 100% | move | −0.01 |
-| 2 | line 3 | move to line 4: 99.99%, backtrack: 0.01%, declare: 0% | move | −0.01 |
-| 3 | line 4 (`memcpy`) | **declare: 98.6%**, backtrack: 1.2%, move to line 5: 0.1% | **declare** | **+1.0** |
+| 2 | line 3 | move to line 4: 94.3%, backtrack: 3.6%, declare: 2.2% | move | −0.01 |
+| 3 | line 4 (`memcpy`) | **declare: 99.94%**, backtrack: 0.04%, move to line 5: 0.02% | **declare** | **+1.0** |
 
 Return for the episode: −0.01 − 0.01 + 1.0 = **+0.98**. Three actions, 3 of 11 statements
 inspected, correct.
@@ -681,14 +894,18 @@ What this shows:
 
 - **Sequence of actions:** move, move, declare.
 - **Policy π(a | s):** the percentages in the third column are the actor's output at each step.
-- **Value V(s):** the critic's estimate rose as the agent approached the `memcpy`, from 0.63 at
-  line 3 to 1.71 at line 4. (These are in normalised reward units, which is why they can
-  exceed 1.)
+- **Value V(s):** the critic's estimate rose as the agent approached the `memcpy`: 0.49 at
+  ENTRY, 0.57 at line 3, 0.87 at line 4. (These are in normalised reward units.)
+- **Discounted return:** −0.01 + 0.99 × (−0.01) + 0.99² × 1.0 = 0.960.
+- **Advantages (GAE):** if PPO learned from this episode, the three actions would get
+  A = 0.446, 0.405 and 0.134. Both moves led to success and get a large advantage; the
+  declaration gets less because the critic already expected success at line 4.
 - **Learned behaviour:** on a plain assignment it keeps moving; on a call to a dangerous API
   it switches almost entirely to declaring.
 
 You can replay this episode in the web visualizer: open `web-app/index.html` and select
-`bigvul_048191`.
+`bigvul_048191`. `python -m soren.walkthrough --graph bigvul_048191` prints every number in
+this section, from the 248 observation values to the softmax and the GAE table.
 
 ---
 
@@ -736,6 +953,14 @@ arithmetic 0.5.
 
 A small classifier (`soren/baselines/node_classifier.py`) is trained on the same 30 features
 to predict whether a statement is vulnerable, and ranks every statement of a function at once.
+It is an MLP built from the same `soren/nn` layers, trained with Adam on a weighted binary
+cross-entropy (vulnerable statements are rare, so their errors count more):
+
+```
+p = sigmoid(z) = 1 / (1 + e^(−z))
+L = − mean( w · y · log p + (1 − y) · log(1 − p) )        ∂L/∂z = ( w·y·(p − 1) + (1 − y)·p ) / N
+```
+
 It is not a search method. It measures how much the features can say when nothing is hidden.
 
 ---
@@ -744,8 +969,8 @@ It is not a search method. It measures how much the features can say when nothin
 
 | Algorithm | What it learns | Why it was or was not used |
 |---|---|---|
-| **PPO** (used) | Policy π(a \| s) and value V(s) | Stable, on-policy, and a version with invalid-action masking exists |
-| **DQN** | Action value Q(s, a); acts by picking the largest Q | Planned as a comparison. The standard implementation has no action masking, so it needs a custom version. Not implemented |
+| **PPO** (used) | Policy π(a \| s) and value V(s) | Stable, on-policy, and masking is a few lines on top of it. Implemented from scratch here (section 5) |
+| **DQN** | Action value Q(s, a); acts by picking the largest Q | Planned as a comparison: masking would mean taking the largest Q over valid actions only. Not implemented |
 | **A2C / A3C** | Policy and value, like PPO | Same family; PPO's clipped objective is more stable and reuses each batch for several updates |
 | **TRPO** | Policy with a hard limit on how far each update moves | PPO is its simpler successor with comparable results |
 | **REINFORCE** | Policy only, from whole-episode returns | High variance; the critic in PPO reduces it |
@@ -782,24 +1007,72 @@ Graphs generated by `soren/data/synthetic.py`, with one planted vulnerable state
 
 With a clear signal the agent finds the statement almost every time and looks at 14% fewer
 statements than DFS. With the signal removed it falls to chance, which shows it is using the
-features and nothing else. Source: `experiments/synthetic-validation.md`.
+features and nothing else. Source: `experiments/synthetic-validation.md`. (These synthetic
+runs were made with the library version and have not been repeated with the new code.)
 
 ### On real BigVul functions (127 held-out test functions)
 
-One declaration per function. Protocol B for the baselines.
+One declaration per function. Protocol B for the baselines. The agent is the from-scratch
+PPO, 5 seeds.
 
-| Method | Functions localized | 95% interval |
+| Method | Functions localized | 95% interval | McNemar p vs agent |
+|---|---|---|---|
+| DFS, stop at first suspicious statement | 27.6% | 19.7–35.4% | 0.18 |
+| Line order, same rule | 27.6% | 19.7–35.4% | 0.18 |
+| Heuristic-first, same rule | 26.8% | 19.7–34.6% | 0.25 |
+| BFS, same rule | 25.2% | 18.1–33.1% | 0.42 |
+| **PPO agent (5 seeds)** | **21.6%** | 15.7–28.2% | |
+| Random walk, same rule | 17.2% | 11.0–23.9% | 0.36 |
+| Random order, same rule | 15.7% | 11.2–20.8% | 0.04 |
+| Random guess | 12.5% | | |
+
+The agent is clearly above a random guess. It is 4 to 6 points below the simple baselines,
+and that gap is not statistically significant on 127 functions (p = 0.18 to 0.42). With three
+declarations allowed it reaches 38.8%, with five 52.0%. Source: `experiments/test-v2/README.md`.
+
+### The library version and our own code, side by side
+
+The same evaluation was run with the first version (`MaskablePPO` from `sb3-contrib`) and with
+Soren's own PPO. Same configuration, data split, seeds and step budget.
+
+| | sb3-contrib `MaskablePPO` | Soren's PPO |
 |---|---|---|
-| DFS, stop at first suspicious statement | 27.6% | 19.7–35.4% |
-| Line order, same rule | 27.6% | 19.7–35.4% |
-| Heuristic-first, same rule | 26.8% | 19.7–34.6% |
-| BFS, same rule | 25.2% | 18.1–33.1% |
-| **PPO agent (5 seeds)** | **21.1%** | 15.3–27.4% |
-| Random guess | 12.5% | |
+| Validation success, one declaration (5 seeds) | 18.4% | 18.9% |
+| **Test success, one declaration (5 seeds)** | **21.1% ± 3.0** | **21.6% ± 2.1** |
+| 95% interval over functions | 15.3–27.4% | 15.7–28.2% |
+| Test success, three declarations (3 seeds) | 40.7% | 38.8% |
+| Test success, five declarations (3 seeds) | 48.0% | 52.0% |
+| Agent's strategy on shuffled labels | 12.2% | 11.5% |
+| Actions per successful episode | 4.3 | 4.2 |
+| Classifier top-1 (3 seeds; PyTorch, then `soren.nn`) | 19.4% | 18.9% |
 
-The agent is clearly above a random guess. It is slightly below the simple baselines, and that
-gap is not statistically significant on 127 functions (p = 0.14). With three declarations
-allowed it reaches 40.7%, with five 48.0%. Source: `experiments/test/README.md`.
+Every difference is within the seed-to-seed spread of either implementation, so the
+conclusions do not change. Sources: `experiments/test/README.md`,
+`experiments/test-v2/README.md`.
+
+### How the statistics are calculated
+
+All three are implemented in `soren/eval/stats.py`, and checked against SciPy in
+`tests/test_stats.py`.
+
+- **Bootstrap 95% interval** (`bootstrap_ci`). Each function's success is first averaged over
+  the 5 seeds. Then the 127 functions are resampled with replacement 10,000 times, the mean is
+  taken each time, and the 2.5th and 97.5th percentiles of those means are the interval.
+- **McNemar's test** (`mcnemar_success`). Only functions where exactly one method succeeds
+  count: b = only the agent, c = only the baseline. If the methods were equally good, each such
+  function would be a coin flip, so p is an exact two-sided binomial test of b out of b + c with
+  probability ½.
+- **Wilcoxon signed-rank test** (`wilcoxon_signed_rank`), for statements inspected. Take the
+  per-function differences, drop zeros, rank their absolute values (ties share the average
+  rank), and add up the ranks of the positive ones (T⁺) and negative ones (T⁻). With up to 50
+  pairs and no ties or zeros the p-value is exact; otherwise
+
+```
+μ = n(n + 1)/4,   σ = √( n(n + 1)(2n + 1)/24 − tie correction ),   z = (T⁺ − μ) / σ
+```
+
+`python -m soren.walkthrough --part 9 --results experiments/test-v2/results.parquet` prints
+each of these with its numbers.
 
 ### Why it does not do better on real code
 
@@ -815,7 +1088,9 @@ earlier, which no per-statement feature captures.
 
 Everything in this section was actually run; each row points to its record under
 `experiments/`. Unless stated otherwise the numbers are success rates on the 128 validation
-functions with one declaration, where a random guess scores 13.6%.
+functions with one declaration, where a random guess scores 13.6%. The experiments in this
+section were run with the first, library-based version; the move to our own code is the last
+subsection.
 
 ### The starting point
 
@@ -893,11 +1168,49 @@ the environment work; the missing piece is information about the statement.
 
 | Choice | Reason |
 |---|---|
-| PPO with action masking | Stable, and a masked version exists ready-made (section 10). The sweep gives no reason to think another algorithm would do better on the same inputs |
+| PPO with action masking | Stable, and masking is simple to add (section 10). The sweep gives no reason to think another algorithm would do better on the same inputs |
+| Our own NumPy implementation | Every calculation can be shown and explained, and the results match the library version (below) |
 | The default rewards and hyperparameters | Nothing tried improved on them beyond noise, so the simplest configuration was kept |
 | 30 features per statement | Structural-only is worse, and embeddings add cost and memorisation without adding signal |
 | One declaration as the headline | The strictest test; larger budgets are reported beside it |
 | Protocol B baselines and test-set-only reporting | The two measurement fixes above |
+
+### Replacing the libraries with our own code
+
+The first version imported its learning code: `MaskablePPO` from `sb3-contrib` (built on
+Stable-Baselines3 and PyTorch), Gymnasium for the environment interface, NetworkX for graph
+algorithms, and SciPy for the statistical tests. That made the core of the project something
+we called rather than something we wrote and could explain line by line. Version 2 replaces
+all of it:
+
+| Was imported | Now written in | What it does |
+|---|---|---|
+| PyTorch layers and autograd | `soren/nn/layers.py` | Linear, tanh, ReLU, MLP, orthogonal initialisation, backpropagation by hand |
+| `torch.optim.Adam`, `clip_grad_norm_` | `soren/nn/optim.py` | Adam with bias correction; global gradient-norm clipping |
+| PyTorch's masked categorical distribution | `soren/nn/distributions.py` | Masking, stable log-softmax, entropy, inverse transform sampling |
+| `MaskablePPO`, its policy and rollout buffer | `soren/agents/ppo.py`, `policy.py`, `buffer.py` | The PPO loop, the loss with a hand-derived gradient, GAE |
+| `DummyVecEnv`, `VecNormalize` | `soren/agents/vec_env.py` | 16 environments in step, running mean and variance, reward scaling |
+| Gymnasium spaces and `Env` | `soren/env/spaces.py` | The two space classes the environment needs |
+| NetworkX | `soren/data/graph_utils.py` | BFS depths, DFS back edges, Kosaraju's strongly connected components |
+| SciPy statistics | `soren/eval/stats.py` | Bootstrap, exact binomial (McNemar), Wilcoxon signed-rank with ties |
+
+How we know the hand-written code is right:
+
+- **Gradients:** `tests/test_nn.py` compares every backward pass, including the full PPO loss
+  through both networks, with a numerical gradient (L(θ + h) − L(θ − h)) / 2h.
+- **Adam, GAE, running variance, cross-entropy:** compared with the formulas computed by hand
+  on small inputs.
+- **Graph algorithms:** strongly connected components compared with a brute-force check
+  (`tests/test_schema.py`).
+- **Statistics:** compared with SciPy's results (`tests/test_stats.py`; SciPy is only a test
+  dependency).
+- **End to end:** retrained 5 seeds and the ablations on the number of declarations, and
+  reran the test evaluation. Test success is 21.6% against 21.1% with the library (section
+  11), within the seed-to-seed spread. The p-values printed by the walkthrough match the ones
+  in the report.
+
+377 tests pass. Training is slower than with PyTorch (about 3,300 against 9,000 timesteps per
+second) but still about 5 minutes per run on a laptop CPU.
 
 ---
 
@@ -920,15 +1233,16 @@ it a reinforcement learning problem and makes the reasoning replayable.
 We did not find prior work that trains an agent to walk a control flow graph to localize a
 vulnerability, but this was not a systematic survey.
 
-### 2. A Gymnasium environment for walking program graphs
+### 2. An environment for walking program graphs
 
 A reusable environment with a fixed-size action space over variable-degree graphs,
 invalid-action masking, a one-hop observation, a declare budget, and potential-based reward
-shaping as an option.
+shaping as an option. It follows the standard `reset` / `step` interface without depending on
+Gymnasium.
 
-- **Evidence:** passes Gymnasium's own `check_env`; 25 tests in `tests/test_env.py`, including
-  one that checks the mask against an independent rule over every action sequence up to
-  length 7.
+- **Evidence:** 23 tests in `tests/test_env.py`, including one that checks the mask against
+  the valid actions in every state reachable within 7 actions, and one that checks the
+  observation does not depend on node IDs.
 - **Where:** `soren/env/`.
 
 ### 3. Two evaluation protocols that expose an unfair comparison
@@ -973,7 +1287,19 @@ method parsed as C yields nothing.
   function both ways and keeping whichever parses recovers **97%** (1,525 of 1,578).
 - **Where:** `soren/data/sources.py`, `soren/data/cfg_builder.py:306` (`select_method`).
 
-### 7. Line-level control flow graphs with verified labels
+### 7. The whole learning pipeline written and checked by hand
+
+The network, backpropagation, Adam, PPO, GAE, reward normalisation and the statistical tests
+are our own NumPy code, and every calculation can be printed with its numbers.
+
+- **Evidence:** numerical gradient checks in `tests/test_nn.py`; SciPy comparisons in
+  `tests/test_stats.py`; retrained agents match the library version on the test set (21.6%
+  against 21.1%, section 11); `python -m soren.walkthrough` prints the whole chain from a C
+  function to a p-value.
+- **Where:** `soren/nn/`, `soren/agents/`, `soren/eval/stats.py`, `soren/mathlog.py`,
+  `soren/walkthrough.py`.
+
+### 8. Line-level control flow graphs with verified labels
 
 Joern produces one node per expression. Soren collapses these to one node per source line,
 merges multi-line statements, and checks every label against the source text so that an
@@ -991,30 +1317,60 @@ off-by-one index cannot silently label the wrong line.
 
 | What | File | Line |
 |---|---|---|
-| Environment class | `soren/env/cfg_nav_env.py` | 77 |
-| Environment settings (`EnvConfig`) | `soren/env/cfg_nav_env.py` | 45 |
-| Valid-action mask | `soren/env/cfg_nav_env.py` | 138 |
-| Start of an episode (`reset`) | `soren/env/cfg_nav_env.py` | 178 |
-| One step: transition and termination | `soren/env/cfg_nav_env.py` | 204 |
-| Building the 248-number observation | `soren/env/cfg_nav_env.py` | 279 |
+| Environment class | `soren/env/cfg_nav_env.py` | 81 |
+| Environment settings (`EnvConfig`) | `soren/env/cfg_nav_env.py` | 49 |
+| Valid-action mask | `soren/env/cfg_nav_env.py` | 142 |
+| Start of an episode (`reset`) | `soren/env/cfg_nav_env.py` | 182 |
+| One step: transition and termination | `soren/env/cfg_nav_env.py` | 210 |
+| Building the 248-number observation | `soren/env/cfg_nav_env.py` | 286 |
+| Action and observation spaces | `soren/env/spaces.py` | |
 | Reward values (`RewardConfig`) | `soren/env/rewards.py` | 38 |
-| Reward function | `soren/env/rewards.py` | 53 |
-| Optional potential-based shaping | `soren/env/rewards.py` | 102 |
-| PPO hyperparameters (`PPOConfig`) | `soren/agents/ppo.py` | 22 |
-| Learning-rate schedule | `soren/agents/ppo.py` | 53 |
-| Parallel environments | `soren/agents/ppo.py` | 59 |
-| Building the PPO model and networks | `soren/agents/ppo.py` | 87 |
-| Training loop | `soren/agents/train.py` | 32 |
-| Validation and best-checkpoint selection | `soren/agents/callbacks.py` | 21 |
-| Running a trained policy | `soren/agents/searcher.py` | 20 |
+| Reward function (`reward_terms`, `base_reward`) | `soren/env/rewards.py` | 53 |
+| Optional potential-based shaping | `soren/env/rewards.py` | 106 |
+| PPO hyperparameters (`PPOConfig`) | `soren/agents/ppo.py` | 48 |
+| Learning-rate schedule | `soren/agents/ppo.py` | 76 |
+| PPO loss and its hand-derived gradient | `soren/agents/ppo.py` | 109 |
+| PPO training loop (`learn`, `collect_rollouts`, `train`) | `soren/agents/ppo.py` | 318 |
+| GAE | `soren/agents/buffer.py` | 25 |
+| Rollout buffer and minibatches | `soren/agents/buffer.py` | 76 |
+| Actor and critic networks | `soren/agents/policy.py` | 26 |
+| Parallel environments | `soren/agents/vec_env.py` | 18 |
+| Running mean and variance, reward normalisation | `soren/agents/vec_env.py` | 64, 91 |
+| Training entry point | `soren/agents/train.py` | 30 |
+| Validation and best-checkpoint selection | `soren/agents/callbacks.py` | 23 |
+| One line per update, `train_log.csv` | `soren/agents/callbacks.py` | 130 |
+| Running a trained policy | `soren/agents/searcher.py` | 19 |
 | Hyperparameter values | `configs/ppo.yaml` | |
 | Environment and reward values | `configs/env.yaml` | |
+
+### Neural network library
+
+| What | File | Line |
+|---|---|---|
+| Orthogonal initialisation | `soren/nn/layers.py` | 22 |
+| Linear layer, forward and backward | `soren/nn/layers.py` | 38 |
+| tanh and ReLU | `soren/nn/layers.py` | 67, 79 |
+| MLP | `soren/nn/layers.py` | 94 |
+| Adam | `soren/nn/optim.py` | 20 |
+| Gradient-norm clipping | `soren/nn/optim.py` | 67 |
+| Masking, log-softmax, entropy, sampling | `soren/nn/distributions.py` | 20 |
+| Gradient checks | `tests/test_nn.py` | |
+
+### Explanations
+
+| What | File |
+|---|---|
+| Printing formulas with their numbers | `soren/mathlog.py` |
+| The 9-part walkthrough (`python -m soren.walkthrough`) | `soren/walkthrough.py` |
+| `--explain` while training | `scripts/train.py` |
+| `--explain` for the test evaluation | `scripts/final_evaluation.py` |
 
 ### Features and data
 
 | What | File | Line |
 |---|---|---|
 | Graph record format | `soren/data/schema.py` | |
+| BFS depths, back edges, strongly connected components | `soren/data/graph_utils.py` | 27, 42, 66 |
 | Structural features | `soren/data/features.py` | 43 |
 | Lexical features | `soren/data/features.py` | 245 |
 | Joern export to line-level CFG | `soren/data/cfg_builder.py` | 116 |
@@ -1032,9 +1388,11 @@ off-by-one index cannot silently label the wrong line.
 | Suspicion score | `soren/baselines/heuristic.py` | 48 |
 | Threshold stop (Protocol B) | `soren/baselines/heuristic.py` | 77 |
 | Heuristic-first search | `soren/baselines/heuristic.py` | 88 |
-| Node classifier | `soren/baselines/node_classifier.py` | |
+| Node classifier | `soren/baselines/node_classifier.py` | 81 |
 | Metrics | `soren/eval/metrics.py` | |
-| Confidence intervals and tests | `soren/eval/stats.py` | |
+| Bootstrap interval | `soren/eval/stats.py` | 37 |
+| Wilcoxon signed-rank test | `soren/eval/stats.py` | 128 |
+| McNemar's test | `soren/eval/stats.py` | 291 |
 | Final test-set evaluation | `scripts/final_evaluation.py` | |
 
 ### Experiment records
@@ -1048,7 +1406,8 @@ off-by-one index cannot silently label the wrong line.
 | Five-seed final runs | `experiments/final/README.md` |
 | Ablations | `experiments/ablations/README.md` |
 | Leakage controls | `experiments/leakage/README.md` |
-| Test-set results | `experiments/test/README.md` |
+| Test-set results, library version | `experiments/test/README.md` |
+| Test-set results, own PPO | `experiments/test-v2/README.md` |
 | Figures | `experiments/figures/` |
 | Full report | `docs/report.md` |
 
@@ -1065,8 +1424,11 @@ is used.
 |---|---|
 | Schulman, Wolski, Dhariwal, Radford, Klimov (2017). [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347) | The training algorithm and its clipped objective (section 5) |
 | Schulman, Moritz, Levine, Jordan, Abbeel (2015). [High-Dimensional Continuous Control Using Generalized Advantage Estimation](https://arxiv.org/abs/1506.02438) | GAE, the advantage estimate with γ and λ (section 5) |
-| Huang, Ontañón (2020). [A Closer Look at Invalid Action Masking in Policy Gradient Algorithms](https://arxiv.org/abs/2006.14171) | Action masking, the idea behind `MaskablePPO` (section 5) |
+| Huang, Ontañón (2020). [A Closer Look at Invalid Action Masking in Policy Gradient Algorithms](https://arxiv.org/abs/2006.14171) | Action masking and why the masked logits get no gradient (section 5) |
+| Huang, Dossa, Raffin, Kanervisto, Wang (2022). [The 37 Implementation Details of Proximal Policy Optimization](https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/) | The details our own PPO follows: orthogonal initialisation, per-minibatch advantage normalisation, reward scaling, gradient clipping, Adam's ε = 10⁻⁵, timeout bootstrapping (section 5) |
 | Kingma, Ba (2014). [Adam: A Method for Stochastic Optimization](https://arxiv.org/abs/1412.6980) | The optimiser that updates both networks (sections 5 and 6) |
+| Saxe, McClelland, Ganguli (2014). [Exact solutions to the nonlinear dynamics of learning in deep linear neural networks](https://arxiv.org/abs/1312.6120) | Orthogonal weight initialisation (section 6) |
+| Rumelhart, Hinton, Williams (1986). [Learning representations by back-propagating errors](https://doi.org/10.1038/323533a0) | Backpropagation, written by hand in `soren/nn/layers.py` (sections 5 and 6) |
 | Ng, Harada, Russell (1999). [Policy Invariance Under Reward Transformations: Theory and Application to Reward Shaping](https://people.eecs.berkeley.edu/~pabbeel/cs287-fa09/readings/NgHaradaRussell-shaping-ICML1999.pdf) | Potential-based reward shaping, tried and left off (section 12) |
 | Sutton, Barto (2018). [Reinforcement Learning: An Introduction](http://incompleteideas.net/book/the-book-2nd.html), 2nd edition | Background for sections 3 and 4: MDPs, returns, value functions, policy gradients |
 
@@ -1088,6 +1450,7 @@ is used.
 | Fan, Li, Wang, Nguyen (2020). [A C/C++ Code Vulnerability Dataset with Code Changes and CVE Summaries](https://doi.org/10.1145/3379597.3387501) | BigVul, the dataset (section 2) |
 | Yamaguchi, Golde, Arp, Rieck (2014). [Modeling and Discovering Vulnerabilities with Code Property Graphs](https://doi.org/10.1109/SP.2014.44) | Joern, which produces the control flow graphs (section 2) |
 | Feng et al. (2020). [CodeBERT: A Pre-Trained Model for Programming and Natural Languages](https://arxiv.org/abs/2002.08155) | The statement embeddings that were tried (sections 11 and 12) |
+| Sharir (1981). [A strong-connectivity algorithm and its applications in data flow analysis](https://doi.org/10.1016/0898-1221(81)90008-0) | Kosaraju's algorithm for strongly connected components, used to find statements inside loops (`soren/data/graph_utils.py`) |
 
 ### Vulnerability detection and localization
 
@@ -1106,14 +1469,23 @@ is used.
 | Croft, Babar, Kholoosi (2023). [Data Quality for Software Vulnerability Datasets](https://arxiv.org/abs/2301.05456) | Label noise and duplicates in BigVul and similar datasets |
 | Ding et al. (2024). [Vulnerability Detection with Code Language Models: How Far Are We?](https://arxiv.org/abs/2403.18624) | Published scores drop sharply under de-duplication and time-ordered splits; the reason for splitting by fixing commit and quoting only the test set (sections 7 and 12) |
 
+### Statistics
+
+| Paper | Used for |
+|---|---|
+| Efron, Tibshirani (1993). [An Introduction to the Bootstrap](https://doi.org/10.1201/9780429246593) | The bootstrap confidence intervals (section 11) |
+| McNemar (1947). [Note on the sampling error of the difference between correlated proportions or percentages](https://doi.org/10.1007/BF02295996) | The paired test on success (section 11) |
+| Wilcoxon (1945). [Individual comparisons by ranking methods](https://doi.org/10.2307/3001968) | The signed-rank test on statements inspected (section 11) |
+
 ### Software
 
 | Paper | Used for |
 |---|---|
-| Raffin et al. (2021). [Stable-Baselines3: Reliable Reinforcement Learning Implementations](https://jmlr.org/papers/v22/20-1364.html) | The library that provides PPO; `sb3-contrib` adds the masked version |
-| Towers et al. (2024). [Gymnasium: A Standard Interface for Reinforcement Learning Environments](https://arxiv.org/abs/2407.17032) | The environment interface `CFGNavEnv` follows |
+| Raffin et al. (2021). [Stable-Baselines3: Reliable Reinforcement Learning Implementations](https://jmlr.org/papers/v22/20-1364.html) | The library the first version trained with (`sb3-contrib`'s `MaskablePPO`); now only the reference our results are compared with (section 11) |
+| Towers et al. (2024). [Gymnasium: A Standard Interface for Reinforcement Learning Environments](https://arxiv.org/abs/2407.17032) | The `reset` / `step` interface `CFGNavEnv` follows, without importing it |
+| Harris et al. (2020). [Array programming with NumPy](https://doi.org/10.1038/s41586-020-2649-2) | The only numerical library the learning code uses |
 </script>
-<script type="application/json" id="glossary">[{"title": "PPO (Proximal Policy Optimization)", "terms": ["Proximal Policy Optimization (PPO)", "Proximal Policy Optimization", "PPO"], "cs": true, "tip": "The learning algorithm that trains the agent. Loop: play for a while, score each action as better or worse than expected, then nudge the policy so good actions get more likely.\nIts key rule: each update may only move the policy a small distance from the old one.\nChosen because it is stable, reuses each batch several times, and has a ready-made version with action masking."}, {"title": "Proximal = \"stay close\"", "terms": ["\"proximal\"", "proximal"], "tip": "Each update must stay close to the previous policy. Here: if an update would change an action's probability by more than 20%, the extra gain is ignored.\nWhy: one batch of lucky or unlucky episodes could otherwise make the agent change drastically and wreck what it already learned."}, {"title": "The clip", "terms": ["The clip", "clip_range", "clipped surrogate objective", "clipped objective"], "tip": "The cap that makes PPO \"proximal\". The ratio new probability / old probability is limited to the range 0.8 to 1.2 (ε = 0.2). Any gain from moving further than that is ignored, so the policy changes in small, safe steps."}, {"title": "MaskablePPO", "terms": ["MaskablePPO"], "cs": true, "tip": "Ordinary PPO plus one feature: before choosing, it removes the actions that are impossible right now. Comes from the sb3-contrib library, so nothing custom had to be written."}, {"title": "sb3-contrib", "terms": ["sb3-contrib"], "cs": true, "tip": "An add-on package for Stable-Baselines3, a standard Python library of reinforcement learning algorithms. It provides MaskablePPO."}, {"title": "Action masking", "terms": ["Action masking", "action masking", "invalid-action masking", "invalid-action masks", "Valid-action mask", "Mask invalid actions"], "tip": "Tells the agent which actions are possible, not which are good.\nThe network always has 8 action slots, but a statement with 2 next statements has 4 empty move slots. Masking forces those to probability zero.\nIt is not cheating: it uses only the graph's shape, never the answer. It just saves the agent from learning \"this button does nothing here\"."}, {"title": "Why 8 actions", "terms": ["Eight discrete actions", "8 discrete actions", "8 actions", "8 action probabilities"], "tip": "There are 3 kinds of action (move, backtrack, declare), but \"move\" needs to say which next statement, and an if or switch has several.\n6 move slots + backtrack + declare = 8.\n6 is a chosen maximum, because a network needs a fixed number of outputs. Most slots are empty at any moment and get masked."}, {"title": "MOVE_i", "terms": ["MOVE_i"], "cs": true, "tip": "Six separate actions, MOVE_0 to MOVE_5: go to the 1st, 2nd, ... 6th next statement, in line order. An ordinary line uses only MOVE_0; an if uses MOVE_0 and MOVE_1."}, {"title": "BACKTRACK", "terms": ["BACKTRACK"], "cs": true, "tip": "Go back to the statement the agent came from. Not possible at the function's entry, so it is masked there."}, {"title": "DECLARE", "terms": ["DECLARE"], "cs": true, "tip": "The agent's final answer: \"the statement I am standing on is the vulnerable one\". +1.0 if right, −0.5 if wrong, and the episode ends."}, {"title": "Why 248 numbers", "terms": ["observation of 248 numbers", "248-number observation", "observe 248 numbers", "248 numbers", "248-number", "248"], "tip": "What the agent sees at each step, as a fixed-length list. Every number is between 0 and 1.\n30 current statement\n+ 2 visit info for it\n+ 198 six next-statement slots (6 × 33)\n+ 13 backtrack target\n+ 5 episode context\n= 248\nIt never sees the code text, anything more than one step away, or the answer."}, {"title": "The 30 features of one statement", "terms": ["30 per-statement features", "30 numbers per statement", "its 30 features", "30 features", "per-statement feature", "per-statement representation"], "tip": "A \"card\" describing one statement.\n11 flags: what kind it is (assignment, call, branch, loop, ...).\n6 numbers: where it sits (edges in, edges out, depth, in a loop, loop header, line position).\n13 numbers: what the code contains (dangerous call, array index, pointer use, arithmetic, sizeof, length-like variable, ...).\n11 + 6 + 13 = 30."}, {"title": "Six successor slots (198 numbers)", "terms": ["Six successor slots", "successor slots", "6 × 33 = 198", "\"slot used\" flag"], "tip": "One slot for each possible next statement, 6 slots at most. Each slot is 33 numbers: 1 \"slot in use\" flag + the statement's 30 features + 1 \"visited before\" + 1 \"jumps back to a loop top\".\nUnused slots are all zeros. 6 × 33 = 198."}, {"title": "Backtrack target (13 numbers)", "terms": ["Backtrack target"], "tip": "A short summary of the statement the agent would return to: 1 flag for \"backtracking is possible\", 1 number for how often it was visited, and 11 flags for its kind. 1 + 1 + 11 = 13."}, {"title": "Episode context (5 numbers)", "terms": ["Episode context"], "tip": "Five progress numbers: fraction of the step budget used, fraction of the function visited, how deep the current path is, how big the function is, and declarations left."}, {"title": "Structural features (17)", "terms": ["Structural (17)", "Structural features"], "tip": "Facts about a statement's place in the graph, not its text: its kind (11 flags), how many edges come in and go out, distance from the entry, inside a loop, top of a loop, and line position."}, {"title": "Lexical features (13)", "terms": ["Lexical (13)", "Lexical features", "lexical features", "lexical flags"], "tip": "Facts read from the statement's text by simple pattern checks: does it call a function, call a dangerous one, allocate, free, index an array, use a pointer, do arithmetic, compare, use sizeof, cast, mention a length-like variable, and how long it is."}, {"title": "One-hot", "terms": ["one-hot"], "tip": "A way to write a category as numbers: one flag per possible kind, with exactly one set to 1 and the rest 0. Here, 11 flags for the 11 statement kinds."}, {"title": "In-degree and out-degree", "terms": ["in-degree", "out-degree", "variable-degree"], "tip": "In-degree: how many statements can lead into this one. Out-degree: how many statements it can lead to. An if has out-degree 2."}, {"title": "Back edge and loop header", "terms": ["loop back edge", "back edge", "loop header"], "tip": "A back edge is the arrow that jumps from the end of a loop body back to the top. The statement it lands on is the loop header."}, {"title": "Dangerous API", "terms": ["dangerous API", "dangerous call"], "tip": "A fixed list of C functions that often cause memory bugs when misused, such as memcpy, strcpy, sprintf, gets and read. The agent only sees a yes/no flag for \"calls one of these\"."}, {"title": "Successor", "terms": ["successors", "successor"], "tip": "A statement that can run directly after the current one. An ordinary line has one successor; an if has two (true branch and false branch); a switch can have several."}, {"title": "Statement = node", "terms": ["one node per source line", "nodes", "node"], "tip": "One box in the graph. In Soren, one node is one line of source code (plus special ENTRY and EXIT nodes)."}, {"title": "ENTRY and EXIT", "terms": ["ENTRY", "EXIT"], "cs": true, "tip": "Two artificial nodes added to every function: ENTRY is where the walk starts, EXIT is where the function ends. They are not real code, so the agent cannot declare them."}, {"title": "Control flow graph (CFG)", "terms": ["control flow graphs", "control flow graph", "CFG"], "tip": "A function drawn as a map: each statement is a box, and an arrow from A to B means \"B can run right after A\". The agent walks along these arrows."}, {"title": "Environment (the \"game\")", "terms": ["Gymnasium environment", "Environment class", "Environment", "environment"], "tip": "The task the agent plays through and gets scored on. In Soren: one vulnerable function as a graph. The agent starts at the entry, moves, backtracks or declares, and receives a reward for each step."}, {"title": "CFGNavEnv", "terms": ["CFGNavEnv.step()", "CFGNavEnv.reset", "CFGNavEnv"], "cs": true, "tip": "The Python class that implements Soren's environment. reset() starts a walk on a random function; step(action) applies one action and returns the new observation and the reward."}, {"title": "Gymnasium", "terms": ["Gymnasium", "check_env"], "cs": true, "tip": "The standard Python interface for reinforcement learning environments (reset and step). Following it lets off-the-shelf algorithms like PPO plug straight in. check_env is its built-in test that an environment follows the rules."}, {"title": "16 parallel environments", "terms": ["16 environments", "Parallel environments", "16 environments × 512 steps"], "tip": "16 copies of the walk running side by side, not 16 fixed functions. Each copy picks a random training function at the start of every episode and a new one when it ends.\nWhy: experience is collected faster, and each update sees a mix of functions, which makes learning steadier."}, {"title": "Episode", "terms": ["Episode", "episodes", "episode"], "tip": "One complete attempt on one function: from ENTRY until the agent declares or runs out of steps."}, {"title": "Step budget", "terms": ["Step budget exhausted", "step budget", "out of steps", "timeout"], "tip": "The maximum number of actions per episode: min(200, 4 × number of statements). Running out costs −0.5, the same as a wrong declaration, so wandering forever is not a safe option."}, {"title": "Declare budget", "terms": ["declare budget", "declarations left", "One declaration per function", "three declarations"], "tip": "How many guesses the agent gets per function. The main results allow one. With three guesses the agent reaches 40.7%, with five 48.0%."}, {"title": "Markov decision process (MDP)", "terms": ["Markov decision process", "MDP"], "tip": "The standard way to write down a reinforcement learning problem: the states you can be in, the actions you can take, where each action leads, the reward you get, and when it ends."}, {"title": "State vs observation", "terms": ["true state", "State s", "Observation", "observation"], "tip": "State: the full truth of the situation (position, path, everything visited). Observation: the part the agent is actually shown, here 248 numbers about the current statement and its direct neighbours."}, {"title": "Partially observable", "terms": ["partially observable", "one-hop observation", "one step ahead"], "tip": "The agent does not see the whole function, only the current statement and the ones directly after it. It is like walking a maze with a torch instead of a map."}, {"title": "Recurrent", "terms": ["recurrent"], "tip": "A network with built-in memory of earlier steps. Soren avoids needing one by putting simple memory into the observation itself (the \"visited before\" flags)."}, {"title": "Deterministic", "terms": ["Deterministic"], "tip": "No randomness in the environment: taking the same action from the same statement always lands in the same place."}, {"title": "Reward", "terms": ["Reward r", "reward r", "Reward", "rewards", "reward"], "tip": "The score for one step. −0.01 per move (so short walks are better), a further −0.02 for stepping onto a visited statement, +1.0 for a correct declaration, −0.5 for a wrong one or for running out of steps."}, {"title": "Return", "terms": ["Return G", "Return", "returns", "return"], "tip": "The total of all rewards in one episode. Example: two moves and a correct declaration = −0.01 − 0.01 + 1.0 = +0.98. The agent is trained to make this as large as possible."}, {"title": "Policy π(a | s)", "terms": ["Policy π(a | s)", "π(a | s)", "π_θ(a | s)", "π_θ(· | s_t)", "Policy", "policy"], "tip": "The agent's rule for acting: given the situation s, the probability of choosing each action a. In Soren the policy is the actor network. θ just means \"the actor's weights\"."}, {"title": "Actor", "terms": ["Actor (policy network)", "actor network", "the actor", "Actor", "actor"], "tip": "The network that answers \"what should I do next?\". It reads the 248 numbers and outputs a score for each of the 8 actions, which become probabilities."}, {"title": "Critic", "terms": ["Critic (value network)", "critic network", "the critic", "Critic", "critic"], "tip": "The network that answers \"how well is this going?\". It reads the same 248 numbers and outputs one number: the reward it expects from here on. It never picks actions; it only helps training judge whether an action beat expectations."}, {"title": "V(s): state value", "terms": ["State value V(s)", "Value V(s)", "V(s)", "V_φ(s)", "V_φ(s_t)", "value function", "Value estimate"], "cs": true, "tip": "The critic's prediction: \"from this spot, how much total reward do I expect to collect?\" φ just means \"the critic's weights\"."}, {"title": "Q(s, a): action value", "terms": ["Action value Q(s, a)", "Q(s, a)", "Q(s_t, a_t)"], "cs": true, "tip": "\"If I take action a from here, how much total reward do I expect?\" Soren never learns this directly. PPO only needs the advantage, Q − V, which it estimates from the rewards actually collected."}, {"title": "Advantage", "terms": ["Advantage A(s, a)", "A(s, a)", "advantages", "advantage", "Advantage"], "tip": "Not the result itself, but the result compared with what was expected.\nAdvantage = what actually happened after the action − what the critic expected from that spot.\nPositive: better than expected, make it more likely. Negative: worse, make it less likely.\nExample: critic expected +0.2, the walk ended at +0.9, advantage ≈ +0.7."}, {"title": "GAE (Generalized Advantage Estimation)", "terms": ["Generalized Advantage Estimate", "GAE", "gae_lambda"], "cs": true, "tip": "The method for calculating the advantage. Looking one step ahead is steady but trusts the critic's possibly wrong guess; looking to the end of the episode uses real rewards but is noisy. GAE blends the two with a knob λ (here 0.95, leaning towards the long view)."}, {"title": "TD error: the one-step surprise", "terms": ["one-step surprise", "TD error", "δ_t"], "tip": "\"Did this single step go better or worse than the critic predicted?\"\nreward received + critic's estimate of the new spot − critic's estimate of the old spot.\nZero means exactly as expected."}, {"title": "γ (gamma): discount", "terms": ["γ = 0.99", "gamma", "γ"], "cs": true, "tip": "How much a reward one step later is worth compared with one now. 0.99 means future rewards count almost fully, with a slight preference for sooner."}, {"title": "λ (lambda): the GAE knob", "terms": ["λ = 0.95", "λ"], "cs": true, "tip": "Between 0 and 1. Near 0: trust the short one-step view (less noise, more reliance on the critic). Near 1: trust the long view of real rewards (more noise). 0.95 is a common middle choice."}, {"title": "Value target R_t", "terms": ["value target", "value targets", "R_t"], "cs": true, "tip": "What the critic should have predicted for that step, worked out after the fact: the advantage plus the critic's own old guess. The critic is trained to move its predictions towards these."}, {"title": "Probability ratio ρ", "terms": ["probability ratio", "ρ_t(θ)", "ρ_t"], "tip": "New probability of the action ÷ old probability of the same action. 1.0 means unchanged; 1.2 means the update made the action 20% more likely. PPO limits this to 0.8–1.2."}, {"title": "ε (epsilon): clip size", "terms": ["ε = 0.2", "ε"], "cs": true, "tip": "How far one update may move an action's probability: 0.2 means at most 20% up or down. This is the \"proximal\" limit."}, {"title": "Loss", "terms": ["Total loss minimised", "Total loss", "loss"], "tip": "A single number saying how wrong the networks currently are. Training means changing the weights to make it smaller.\nL = policy loss + 0.5 × value loss − 0.01 × entropy.\nThe policy part improves the actor, the value part fixes the critic at half weight, and the minus sign on entropy gently rewards exploring."}, {"title": "Policy (actor) loss", "terms": ["Policy (actor) loss", "L_policy"], "cs": true, "tip": "The part of the loss that improves the actor: make actions with positive advantage more likely and those with negative advantage less likely, but never by more than the clip allows."}, {"title": "Value (critic) loss", "terms": ["Value (critic) loss", "L_value"], "cs": true, "tip": "How wrong the critic's guesses were: the gap between what it predicted and what really happened, squared and averaged. Shrinking it makes the critic a better predictor, which makes the advantages more accurate."}, {"title": "Entropy bonus", "terms": ["Entropy bonus", "entropy bonus", "entropy of", "entropy", "ent_coef"], "tip": "Entropy measures how spread out the agent's choices are: low if it picks one action 99% of the time, high if it still tries several. A small reward for high entropy keeps the agent exploring instead of locking onto the first habit that worked."}, {"title": "H", "terms": ["H"], "cs": true, "formula": true, "tip": "The average entropy of the policy over the batch: how undecided the agent is. Higher means more exploring."}, {"title": "vf_coef", "terms": ["vf_coef"], "cs": true, "tip": "The weight of the critic's loss in the total loss: 0.5, so fixing the critic counts half as much as improving the actor."}, {"title": "Gradient", "terms": ["Gradients", "gradients", "gradient descent", "gradient"], "tip": "For every weight, the direction that would reduce the loss. Gradient descent means repeatedly taking a small step in that direction."}, {"title": "Backpropagation", "terms": ["backpropagation"], "tip": "The procedure that works out, for every weight in the network, which way to change it to reduce the loss. It works backwards from the output layer to the input layer."}, {"title": "Gradient clipping", "terms": ["clipped to a norm of", "max_grad_norm"], "tip": "If the suggested change to the weights is too large overall, it is scaled down to a maximum size of 0.5. A second safety cap, separate from PPO's clip, against one bad batch causing a wild jump."}, {"title": "Adam optimiser", "terms": ["Adam"], "cs": true, "tip": "The method that actually changes the weights. Backpropagation gives the direction; Adam decides how big a step each weight takes. It remembers recent directions (momentum) and gives each weight its own step size. It is the standard default, nothing custom."}, {"title": "Learning rate", "terms": ["learning rate 3 × 10⁻⁴", "Learning-rate schedule", "learning rate", "learning_rate"], "tip": "The overall step size for weight updates. It starts at 0.0003 and shrinks steadily to zero, so early changes are larger and late ones are fine adjustments."}, {"title": "Logits", "terms": ["logits"], "tip": "The raw scores the actor outputs, one per action, before they are turned into probabilities. They can be any number, positive or negative; a higher score means a more preferred action."}, {"title": "Softmax", "terms": ["softmax"], "tip": "The function that turns raw scores into probabilities: all positive and adding up to 100%, with higher scores getting the larger share."}, {"title": "Sampling vs most probable", "terms": ["Sampling from the policy", "sampled", "sampling", "samples"], "tip": "Picking an action at random according to the probabilities, so a 70% action is chosen about 70% of the time. Used in training so the agent tries things. At test time it simply takes the most probable valid action."}, {"title": "Multilayer perceptron (MLP)", "terms": ["multilayer perceptrons", "plain MLP", "MlpPolicy", "MLP"], "tip": "The simplest kind of neural network: a stack of layers where every output of a layer is a weighted sum of all its inputs. Soren uses 3 layers per network: 248 → 256 → 256 → output."}, {"title": "tanh", "terms": ["tanh"], "cs": true, "tip": "A function applied after each hidden layer that squashes every number into the range −1 to 1. Without it, three stacked layers would behave like one weighted sum and could not learn combinations of features."}, {"title": "Linear layer", "terms": ["Linear 248 → 256", "Linear 256 → 256", "Linear 256 → 8", "Linear 256 → 1", "hidden layer", "no shared layers"], "tip": "One layer of the network: every output number is a weighted sum of all input numbers. \"248 → 256\" means 248 numbers in, 256 out. The weights are what training adjusts. \"No shared layers\" means actor and critic are fully separate networks."}, {"title": "Parameters (weights)", "terms": ["261,385", "Parameters", "weights"], "tip": "The adjustable numbers inside the networks; learning means changing them. Soren has 261,385 in total, which is tiny (a modern language model has billions)."}, {"title": "Graph neural network (GNN)", "terms": ["graph neural networks", "graph neural network", "GNN", "graph encoder"], "tip": "A network designed to read a whole graph at once. Soren does not use one: its agent sees only a fixed-length summary of the local neighbourhood, so a plain network is enough. Listed as future work."}, {"title": "Policy-gradient", "terms": ["policy-gradient"], "tip": "A family of methods that learn the policy directly: try actions, then shift probabilities towards the ones that turned out well."}, {"title": "Actor-critic", "terms": ["actor-critic"], "tip": "A method with two parts: an actor that chooses actions and a critic that estimates how good the situation is. The critic's estimate makes the actor's learning signal much less noisy."}, {"title": "Model-free", "terms": ["model-free", "Model of the environment"], "tip": "The agent does not plan by imagining future steps. It learns by trying things and seeing the rewards, then acts directly from what it has learned."}, {"title": "On-policy", "terms": ["On-policy / off-policy", "On-policy", "on-policy"], "tip": "The agent learns only from experience collected by its current policy. Once a batch has been used for its update, it is thrown away and fresh experience is collected."}, {"title": "Exploration", "terms": ["Exploration", "exploring"], "tip": "Trying actions that do not currently look best, in case they turn out better. Without it the agent would lock onto its first working habit."}, {"title": "Deep RL", "terms": ["Deep RL", "deep RL"], "tip": "Reinforcement learning where the policy and value function are neural networks rather than lookup tables."}, {"title": "Transition", "terms": ["8,192 transitions", "Transitions per rollout", "(s, a, r, s′)", "transitions", "transition"], "tip": "One recorded step: the situation (s), the action taken (a), the reward received (r) and the new situation (s′). 16 environments × 512 steps = 8,192 of them per round."}, {"title": "Rollout", "terms": ["Rollout", "rollouts", "rollout", "collect experience", "batch of experience"], "tip": "One round of data collection: the current policy plays 512 steps in each of 16 environments, giving 8,192 transitions. Then the networks are updated and a new rollout starts."}, {"title": "Epochs and minibatches", "terms": ["10 epochs over the rollout", "Passes over each rollout", "10 passes over each rollout", "Minibatch size", "minibatches of 512", "n_epochs", "batch_size"], "tip": "The 8,192 transitions of a rollout are split into 16 minibatches of 512, and each minibatch produces one weight update. The whole set is gone through 10 times (10 epochs). 16 × 10 = 160 updates per rollout."}, {"title": "Gradient step", "terms": ["160 gradient steps", "Gradient steps per rollout", "Total gradient steps", "gradient step"], "tip": "One actual update of the weights, computed from one minibatch of 512 transitions. 160 per rollout, about 19,700 in a full training run."}, {"title": "Timesteps", "terms": ["Total timesteps", "timesteps", "n_steps"], "tip": "A count of single actions taken across all environments. 1,000,000 timesteps means the agent took about a million actions during training."}, {"title": "Checkpoint", "terms": ["best_model.zip", "checkpoint", "Choosing the checkpoint"], "tip": "A saved copy of the networks' weights. Every 50,000 timesteps the agent is tested on the validation functions, and the best-scoring copy is kept, not simply the last one."}, {"title": "Train / validation / test", "terms": ["1,023 / 128 / 127", "validation functions", "Validation evaluations", "validation", "test set", "held-out test functions", "Training functions"], "tip": "Three separate sets of functions. Training (1,023): what the agent learns from. Validation (128): used during training to pick the best checkpoint. Test (127): never touched until the very end, so its score is an honest measure on unseen code."}, {"title": "Seeds", "terms": ["5 independent runs", "5 seeds", "Seeds", "seed"], "tip": "The starting number for the random generator. Training involves randomness, so it is repeated 5 times with different seeds and the results are averaged. That shows the result is not a lucky one-off."}, {"title": "Reward normalisation", "terms": ["normalised reward units", "normalised by a running", "VecNormalize"], "tip": "During training, rewards are rescaled to a consistent size so learning is steadier. A side effect: the critic's value estimates are in these rescaled units, which is why they can be above 1."}, {"title": "Baselines", "terms": ["Baselines", "baselines", "non-learning methods", "Non-learning search methods"], "tip": "Simple fixed-rule methods the agent is compared against. They do not learn: no rewards, no networks. If a learned agent cannot beat them, the learning is not adding much."}, {"title": "Depth-first search (DFS)", "terms": ["Depth-first search (DFS)", "DFS"], "cs": true, "tip": "Keep following the first unvisited next statement as deep as it goes; when stuck, back up and try the next branch."}, {"title": "Breadth-first search (BFS)", "terms": ["Breadth-first search (BFS)", "BFS"], "cs": true, "tip": "Look at everything one step from the entry, then everything two steps away, and so on outward."}, {"title": "Heuristic-first", "terms": ["Heuristic-first", "heuristic-first"], "tip": "Always go next to the reachable statement that looks most suspicious according to a hand-written score. A strong baseline because it uses the same flags the agent sees."}, {"title": "Suspicion score", "terms": ["suspicion score", "Suspicion score", "suspicion\n  score"], "tip": "A hand-written number for how risky a statement looks: dangerous call 3, array subscript 2, pointer arithmetic 2, pointer dereference 1, allocation 1, length-like variable 1, arithmetic 0.5, added up and scaled to 0–1. No learning involved."}, {"title": "Protocol A: oracle stop", "terms": ["Protocol A (oracle stop).", "Protocol A", "oracle stop", "Oracle stop", "stopped\nwhen they reach the answer"], "tip": "The baseline is stopped automatically the moment it steps on a vulnerable statement, so it effectively knows the answer and cannot be wrong. It only measures how many statements it looked at. Unfair to compare with the agent, which must decide for itself."}, {"title": "Protocol B: must declare", "terms": ["Protocol B (must declare).", "Protocol B", "must declare", "same rule", "stop at first suspicious statement", "Threshold stop"], "tip": "The baseline is not told the answer. It walks in its usual order and declares at the first statement whose suspicion score reaches a threshold, so it can be wrong, just like the agent. This is the fair comparison."}, {"title": "Threshold", "terms": ["threshold"], "tip": "The cut-off suspicion score at which a baseline declares. It was tuned on the validation functions, never on the test set."}, {"title": "Classifier (supervised reference)", "terms": ["Node classifier", "small classifier", "classifier", "supervised"], "tip": "A model shown every statement of a function at once, with the correct labels during training, and asked to rank them. Not a search. It measures the most that the 30 features can reveal when nothing is hidden."}, {"title": "Top-1", "terms": ["top-1", "ranks a vulnerable one first"], "tip": "How often the single highest-ranked statement is actually vulnerable."}, {"title": "Random guess (chance)", "terms": ["Random guess", "random guess", "chance"], "tip": "The success rate from declaring a statement picked at random: 12.5% on the test functions. Anything a method scores has to be judged against this floor."}, {"title": "95% interval", "terms": ["95% interval", "confidence intervals", "Confidence intervals"], "tip": "The range the true success rate plausibly lies in, given only 127 test functions. Wide, overlapping ranges mean two methods cannot be confidently told apart."}, {"title": "Statistically significant", "terms": ["not statistically significant", "p = 0.14", "within noise"], "tip": "A gap is significant when it is too large to be explained by luck. p = 0.14 means a gap this size would appear about 14% of the time by chance alone, which is not rare enough (the usual bar is 5%). So the agent and the baselines are not reliably different."}, {"title": "Why MCTS does not fit", "terms": ["Monte Carlo Tree Search", "Planning / MCTS", "MCTS / AlphaZero", "MCTS", "tree search", "search tree"], "tip": "MCTS picks a move by imagining many futures and checking how each scores. Soren can imagine the moves (the graph is known) but not the score: on a new function nobody knows whether a declaration is right, which is the very thing being asked. In chess the rules tell you who won; here the \"who won\" is hidden."}, {"title": "AlphaZero", "terms": ["AlphaZero"], "cs": true, "tip": "Tree search combined with a learned network that guesses how promising each position is, so the search does not need the true score. A possible extension for Soren, but more to build than PPO."}, {"title": "DQN", "terms": ["DQN"], "cs": true, "tip": "An algorithm that learns a score Q for every action and always picks the highest, with no separate policy network. Not used: the standard version has no action masking, so it would need custom work."}, {"title": "A2C / A3C", "terms": ["A2C / A3C"], "cs": true, "tip": "Earlier actor-critic algorithms from the same family as PPO. They lack the clip, so they are less stable, and they use each batch only once."}, {"title": "TRPO", "terms": ["TRPO"], "cs": true, "tip": "PPO's predecessor. It enforces the same \"stay close\" idea with a strict mathematical limit and heavier computation; PPO gets similar results more simply."}, {"title": "REINFORCE", "terms": ["REINFORCE"], "cs": true, "tip": "The simplest policy-gradient algorithm: no critic, it judges actions by the whole episode's return. Simple but very noisy."}, {"title": "High variance", "terms": ["High variance"], "tip": "The learning signal jumps around a lot from one episode to the next, because lots of random things affect the final score. Noisy signals make learning slow and unstable."}, {"title": "Acting greedily", "terms": ["act greedily", "picking the largest Q"], "tip": "Always choosing the action with the highest score, with no randomness."}, {"title": "BigVul", "terms": ["BigVul dataset", "BigVul"], "cs": true, "tip": "A public dataset of real C and C++ functions from open-source projects, each linked to a known vulnerability (CVE) and the commit that fixed it."}, {"title": "CWE-119 and CWE-125", "terms": ["CWE-119/125", "CWE-119", "CWE-125"], "cs": true, "tip": "Standard vulnerability categories. CWE-119: operations outside the bounds of a memory buffer (e.g. buffer overflow). CWE-125: reading past the end of a buffer. Soren uses only these two kinds."}, {"title": "Ground truth", "terms": ["ground truth", "vulnerable nodes", "labels", "Label alignment"], "tip": "The \"correct answer\" used for scoring: the lines that the fixing commit removed or rewrote. It is a proxy, since a fix can also touch lines that were not themselves the bug."}, {"title": "Joern", "terms": ["Joern"], "cs": true, "tip": "An open-source code analysis tool. Soren uses it to parse each C/C++ function and produce its control flow graph."}, {"title": "GraphRecord", "terms": ["GraphRecord files", "GraphRecord", "Graph record format", "Shared record"], "cs": true, "tip": "The single data format everything downstream reads: one function with its nodes, edges, vulnerable nodes and source lines."}, {"title": "Split by fixing commit", "terms": ["Split by fixing commit", "Commit-level split"], "tip": "Functions fixed by the same commit always go into the same set (train, validation or test). Otherwise near-identical functions could appear in both training and test and inflate the score."}, {"title": "Synthetic graphs", "terms": ["synthetic graphs", "Synthetic graphs", "Synthetic validation"], "tip": "Artificial, generated graphs with one planted vulnerable statement. Used to check that the method works at all before trying real code, where the signal is much weaker."}, {"title": "Reward shaping", "terms": ["potential-based reward\nshaping", "potential-based shaping", "unshaped reward"], "tip": "Optional extra hints added to the reward during training to speed up learning, done in a way that does not change which behaviour is best. Off by default; \"unshaped\" is the plain reward from the table."}, {"title": "Hyperparameters", "terms": ["hyperparameter", "Hyperparameter", "hyperparameters"], "tip": "Settings chosen by people before training, not learned: learning rate, number of environments, clip size and so on. They live in configs/ppo.yaml."}, {"title": "Sweep", "terms": ["sweep", "Ablations"], "tip": "Running training several times with different settings to see whether any choice matters. Here eight settings all gave about the same result, which points to the features, not the algorithm, as the limit. An ablation removes one piece to see how much it was contributing."}, {"title": "CodeBERT embeddings", "terms": ["CodeBERT embeddings", "CodeBERT"], "cs": true, "tip": "A richer description of each statement produced by a pretrained language model for code. Adding it did not improve the classifier, which suggests the limit is looking at one statement at a time, not how it is described."}, {"title": "Leakage controls", "terms": ["shuffled labels", "permuting statement IDs", "Leakage controls"], "tip": "Checks that the agent is not getting the answer from somewhere it should not. Shuffled labels: train on wrong answers, which should give chance-level scores. Permuted IDs: renumber the statements, which should change nothing."}, {"title": "Golden tests", "terms": ["golden tests"], "tip": "Tests that compare the program's output with a hand-checked correct answer stored in the repository."}, {"title": "Overfitting (memorising)", "terms": ["overfits", "overfit", "memorised", "memorising", "memorise", "memorisation"], "tip": "Doing well on the examples seen in training but not on new ones. Here: 56% on training functions against about 20% on unseen ones. The agent has partly learned to recognise specific functions, not a general skill."}, {"title": "Explained variance", "terms": ["Explained variance of the critic", "explained variance"], "tip": "How well the critic's predictions match what actually happened. 0 means no better than guessing the average; 1 means perfect. Rising from 0 to 0.72 shows the critic is learning."}, {"title": "Approximate KL", "terms": ["Approximate KL per update", "KL"], "cs": true, "tip": "A measure of how far one update moved the policy from the previous one. Small values (below about 0.02) mean gentle, safe updates, which is what PPO aims for."}, {"title": "Clip fraction", "terms": ["Clip fraction", "clip\n  fraction"], "tip": "The share of training samples where the update tried to move an action's probability by more than the 20% limit and was cut off. A few percent is normal; a large share would mean the updates are too aggressive."}, {"title": "Policy entropy", "terms": ["Policy entropy"], "tip": "How undecided the agent is, averaged over training steps. High early on (it tries many actions), low later (it has settled on what to do). 0 would mean it always picks one action with certainty."}, {"title": "Standard error", "terms": ["standard error"], "tip": "How much a measured percentage would wobble if the experiment were repeated on a different sample of the same size. Differences smaller than about two standard errors cannot be told apart from luck."}, {"title": "Curriculum", "terms": ["graph-size curriculum", "curriculum"], "tip": "Training on easy cases first (small functions) and adding harder ones as the agent improves. Built but not used here, because training was not getting stuck on large functions."}, {"title": "Throughput", "terms": ["timesteps per second"], "tip": "How fast training runs: the number of agent actions simulated and learned from each second."}]</script>
+<script type="application/json" id="glossary">[{"title": "PPO (Proximal Policy Optimization)", "terms": ["Proximal Policy Optimization (PPO)", "Proximal Policy Optimization", "PPO"], "cs": true, "tip": "The learning algorithm that trains the agent. Loop: play for a while, score each action as better or worse than expected, then nudge the policy so good actions get more likely.\nIts key rule: each update may only move the policy a small distance from the old one.\nChosen because it is stable and reuses each batch several times. In Soren it is written from scratch in NumPy (soren/agents/ppo.py)."}, {"title": "Proximal = \"stay close\"", "terms": ["\"proximal\"", "proximal"], "tip": "Each update must stay close to the previous policy. Here: if an update would change an action's probability by more than 20%, the extra gain is ignored.\nWhy: one batch of lucky or unlucky episodes could otherwise make the agent change drastically and wreck what it already learned."}, {"title": "The clip", "terms": ["The clip", "clip_range", "clipped surrogate objective", "clipped objective"], "tip": "The cap that makes PPO \"proximal\". The ratio new probability / old probability is limited to the range 0.8 to 1.2 (ε = 0.2). Any gain from moving further than that is ignored, so the policy changes in small, safe steps."}, {"title": "MaskablePPO", "terms": ["MaskablePPO"], "cs": true, "tip": "Ordinary PPO plus one feature: before choosing, it removes the actions that are impossible right now. It comes from the sb3-contrib library and was used in the first version. Version 2 replaces it with Soren's own PPO, which does the same masking."}, {"title": "sb3-contrib", "terms": ["sb3-contrib"], "cs": true, "tip": "An add-on package for Stable-Baselines3, a standard Python library of reinforcement learning algorithms. It provides MaskablePPO. The first version used it; version 2 no longer depends on it."}, {"title": "Action masking", "terms": ["Action masking", "action masking", "invalid-action masking", "invalid-action masks", "Valid-action mask", "Mask invalid actions"], "tip": "Tells the agent which actions are possible, not which are good.\nThe network always has 8 action slots, but a statement with 2 next statements has 4 empty move slots. Masking forces those to probability zero.\nIt is not cheating: it uses only the graph's shape, never the answer. It just saves the agent from learning \"this button does nothing here\"."}, {"title": "Why 8 actions", "terms": ["Eight discrete actions", "8 discrete actions", "8 actions", "8 action probabilities"], "tip": "There are 3 kinds of action (move, backtrack, declare), but \"move\" needs to say which next statement, and an if or switch has several.\n6 move slots + backtrack + declare = 8.\n6 is a chosen maximum, because a network needs a fixed number of outputs. Most slots are empty at any moment and get masked."}, {"title": "MOVE_i", "terms": ["MOVE_i"], "cs": true, "tip": "Six separate actions, MOVE_0 to MOVE_5: go to the 1st, 2nd, ... 6th next statement, in line order. An ordinary line uses only MOVE_0; an if uses MOVE_0 and MOVE_1."}, {"title": "BACKTRACK", "terms": ["BACKTRACK"], "cs": true, "tip": "Go back to the statement the agent came from. Not possible at the function's entry, so it is masked there."}, {"title": "DECLARE", "terms": ["DECLARE"], "cs": true, "tip": "The agent's final answer: \"the statement I am standing on is the vulnerable one\". +1.0 if right, −0.5 if wrong, and the episode ends."}, {"title": "Why 248 numbers", "terms": ["observation of 248 numbers", "248-number observation", "observe 248 numbers", "248 numbers", "248-number", "248"], "tip": "What the agent sees at each step, as a fixed-length list. Every number is between 0 and 1.\n30 current statement\n+ 2 visit info for it\n+ 198 six next-statement slots (6 × 33)\n+ 13 backtrack target\n+ 5 episode context\n= 248\nIt never sees the code text, anything more than one step away, or the answer."}, {"title": "The 30 features of one statement", "terms": ["30 per-statement features", "30 numbers per statement", "its 30 features", "30 features", "per-statement feature", "per-statement representation"], "tip": "A \"card\" describing one statement.\n11 flags: what kind it is (assignment, call, branch, loop, ...).\n6 numbers: where it sits (edges in, edges out, depth, in a loop, loop header, line position).\n13 numbers: what the code contains (dangerous call, array index, pointer use, arithmetic, sizeof, length-like variable, ...).\n11 + 6 + 13 = 30."}, {"title": "Six successor slots (198 numbers)", "terms": ["Six successor slots", "successor slots", "6 × 33 = 198", "\"slot used\" flag"], "tip": "One slot for each possible next statement, 6 slots at most. Each slot is 33 numbers: 1 \"slot in use\" flag + the statement's 30 features + 1 \"visited before\" + 1 \"jumps back to a loop top\".\nUnused slots are all zeros. 6 × 33 = 198."}, {"title": "Backtrack target (13 numbers)", "terms": ["Backtrack target"], "tip": "A short summary of the statement the agent would return to: 1 flag for \"backtracking is possible\", 1 number for how often it was visited, and 11 flags for its kind. 1 + 1 + 11 = 13."}, {"title": "Episode context (5 numbers)", "terms": ["Episode context"], "tip": "Five progress numbers: fraction of the step budget used, fraction of the function visited, how deep the current path is, how big the function is, and declarations left."}, {"title": "Structural features (17)", "terms": ["Structural (17)", "Structural features"], "tip": "Facts about a statement's place in the graph, not its text: its kind (11 flags), how many edges come in and go out, distance from the entry, inside a loop, top of a loop, and line position."}, {"title": "Lexical features (13)", "terms": ["Lexical (13)", "Lexical features", "lexical features", "lexical flags"], "tip": "Facts read from the statement's text by simple pattern checks: does it call a function, call a dangerous one, allocate, free, index an array, use a pointer, do arithmetic, compare, use sizeof, cast, mention a length-like variable, and how long it is."}, {"title": "One-hot", "terms": ["one-hot"], "tip": "A way to write a category as numbers: one flag per possible kind, with exactly one set to 1 and the rest 0. Here, 11 flags for the 11 statement kinds."}, {"title": "In-degree and out-degree", "terms": ["in-degree", "out-degree", "variable-degree"], "tip": "In-degree: how many statements can lead into this one. Out-degree: how many statements it can lead to. An if has out-degree 2."}, {"title": "Back edge and loop header", "terms": ["loop back edge", "back edge", "loop header"], "tip": "A back edge is the arrow that jumps from the end of a loop body back to the top. The statement it lands on is the loop header."}, {"title": "Dangerous API", "terms": ["dangerous API", "dangerous call"], "tip": "A fixed list of C functions that often cause memory bugs when misused, such as memcpy, strcpy, sprintf, gets and read. The agent only sees a yes/no flag for \"calls one of these\"."}, {"title": "Successor", "terms": ["successors", "successor"], "tip": "A statement that can run directly after the current one. An ordinary line has one successor; an if has two (true branch and false branch); a switch can have several."}, {"title": "Statement = node", "terms": ["one node per source line", "nodes", "node"], "tip": "One box in the graph. In Soren, one node is one line of source code (plus special ENTRY and EXIT nodes)."}, {"title": "ENTRY and EXIT", "terms": ["ENTRY", "EXIT"], "cs": true, "tip": "Two artificial nodes added to every function: ENTRY is where the walk starts, EXIT is where the function ends. They are not real code, so the agent cannot declare them."}, {"title": "Control flow graph (CFG)", "terms": ["control flow graphs", "control flow graph", "CFG"], "tip": "A function drawn as a map: each statement is a box, and an arrow from A to B means \"B can run right after A\". The agent walks along these arrows."}, {"title": "Environment (the \"game\")", "terms": ["Gymnasium environment", "Environment class", "Environment", "environment"], "tip": "The task the agent plays through and gets scored on. In Soren: one vulnerable function as a graph. The agent starts at the entry, moves, backtracks or declares, and receives a reward for each step."}, {"title": "CFGNavEnv", "terms": ["CFGNavEnv.step()", "CFGNavEnv.reset", "CFGNavEnv"], "cs": true, "tip": "The Python class that implements Soren's environment. reset() starts a walk on a random function; step(action) applies one action and returns the new observation and the reward."}, {"title": "Gymnasium", "terms": ["Gymnasium", "check_env"], "cs": true, "tip": "The standard Python interface for reinforcement learning environments (reset and step). CFGNavEnv follows the same interface, but version 2 no longer imports Gymnasium: the two space classes it needs are in soren/env/spaces.py."}, {"title": "16 parallel environments", "terms": ["16 environments", "Parallel environments", "16 environments × 512 steps"], "tip": "16 copies of the walk running side by side, not 16 fixed functions. Each copy picks a random training function at the start of every episode and a new one when it ends.\nWhy: experience is collected faster, and each update sees a mix of functions, which makes learning steadier."}, {"title": "Episode", "terms": ["Episode", "episodes", "episode"], "tip": "One complete attempt on one function: from ENTRY until the agent declares or runs out of steps."}, {"title": "Step budget", "terms": ["Step budget exhausted", "step budget", "out of steps", "timeout"], "tip": "The maximum number of actions per episode: min(200, 4 × number of statements). Running out costs −0.5, the same as a wrong declaration, so wandering forever is not a safe option."}, {"title": "Declare budget", "terms": ["declare budget", "declarations left", "One declaration per function", "three declarations"], "tip": "How many guesses the agent gets per function. The main results allow one. With three guesses the agent reaches 40.7%, with five 48.0%."}, {"title": "Markov decision process (MDP)", "terms": ["Markov decision process", "MDP"], "tip": "The standard way to write down a reinforcement learning problem: the states you can be in, the actions you can take, where each action leads, the reward you get, and when it ends."}, {"title": "State vs observation", "terms": ["true state", "State s", "Observation", "observation"], "tip": "State: the full truth of the situation (position, path, everything visited). Observation: the part the agent is actually shown, here 248 numbers about the current statement and its direct neighbours."}, {"title": "Partially observable", "terms": ["partially observable", "one-hop observation", "one step ahead"], "tip": "The agent does not see the whole function, only the current statement and the ones directly after it. It is like walking a maze with a torch instead of a map."}, {"title": "Recurrent", "terms": ["recurrent"], "tip": "A network with built-in memory of earlier steps. Soren avoids needing one by putting simple memory into the observation itself (the \"visited before\" flags)."}, {"title": "Deterministic", "terms": ["Deterministic"], "tip": "No randomness in the environment: taking the same action from the same statement always lands in the same place."}, {"title": "Reward", "terms": ["Reward r", "reward r", "Reward", "rewards", "reward"], "tip": "The score for one step. −0.01 per move (so short walks are better), a further −0.02 for stepping onto a visited statement, +1.0 for a correct declaration, −0.5 for a wrong one or for running out of steps."}, {"title": "Return", "terms": ["Return G", "Return", "returns", "return"], "tip": "The total of all rewards in one episode. Example: two moves and a correct declaration = −0.01 − 0.01 + 1.0 = +0.98. The agent is trained to make this as large as possible."}, {"title": "Policy π(a | s)", "terms": ["Policy π(a | s)", "π(a | s)", "π_θ(a | s)", "π_θ(· | s_t)", "Policy", "policy"], "tip": "The agent's rule for acting: given the situation s, the probability of choosing each action a. In Soren the policy is the actor network. θ just means \"the actor's weights\"."}, {"title": "Actor", "terms": ["Actor (policy network)", "actor network", "the actor", "Actor", "actor"], "tip": "The network that answers \"what should I do next?\". It reads the 248 numbers and outputs a score for each of the 8 actions, which become probabilities."}, {"title": "Critic", "terms": ["Critic (value network)", "critic network", "the critic", "Critic", "critic"], "tip": "The network that answers \"how well is this going?\". It reads the same 248 numbers and outputs one number: the reward it expects from here on. It never picks actions; it only helps training judge whether an action beat expectations."}, {"title": "V(s): state value", "terms": ["State value V(s)", "Value V(s)", "V(s)", "V_φ(s)", "V_φ(s_t)", "value function", "Value estimate"], "cs": true, "tip": "The critic's prediction: \"from this spot, how much total reward do I expect to collect?\" φ just means \"the critic's weights\"."}, {"title": "Q(s, a): action value", "terms": ["Action value Q(s, a)", "Q(s, a)", "Q(s_t, a_t)"], "cs": true, "tip": "\"If I take action a from here, how much total reward do I expect?\" Soren never learns this directly. PPO only needs the advantage, Q − V, which it estimates from the rewards actually collected."}, {"title": "Advantage", "terms": ["Advantage A(s, a)", "A(s, a)", "advantages", "advantage", "Advantage"], "tip": "Not the result itself, but the result compared with what was expected.\nAdvantage = what actually happened after the action − what the critic expected from that spot.\nPositive: better than expected, make it more likely. Negative: worse, make it less likely.\nExample: critic expected +0.2, the walk ended at +0.9, advantage ≈ +0.7."}, {"title": "GAE (Generalized Advantage Estimation)", "terms": ["Generalized Advantage Estimate", "GAE", "gae_lambda"], "cs": true, "tip": "The method for calculating the advantage. Looking one step ahead is steady but trusts the critic's possibly wrong guess; looking to the end of the episode uses real rewards but is noisy. GAE blends the two with a knob λ (here 0.95, leaning towards the long view)."}, {"title": "TD error: the one-step surprise", "terms": ["one-step surprise", "TD error", "δ_t"], "tip": "\"Did this single step go better or worse than the critic predicted?\"\nreward received + critic's estimate of the new spot − critic's estimate of the old spot.\nZero means exactly as expected."}, {"title": "γ (gamma): discount", "terms": ["γ = 0.99", "gamma", "γ"], "cs": true, "tip": "How much a reward one step later is worth compared with one now. 0.99 means future rewards count almost fully, with a slight preference for sooner."}, {"title": "λ (lambda): the GAE knob", "terms": ["λ = 0.95", "λ"], "cs": true, "tip": "Between 0 and 1. Near 0: trust the short one-step view (less noise, more reliance on the critic). Near 1: trust the long view of real rewards (more noise). 0.95 is a common middle choice."}, {"title": "Value target R_t", "terms": ["value target", "value targets", "R_t"], "cs": true, "tip": "What the critic should have predicted for that step, worked out after the fact: the advantage plus the critic's own old guess. The critic is trained to move its predictions towards these."}, {"title": "Probability ratio ρ", "terms": ["probability ratio", "ρ_t(θ)", "ρ_t"], "tip": "New probability of the action ÷ old probability of the same action. 1.0 means unchanged; 1.2 means the update made the action 20% more likely. PPO limits this to 0.8–1.2."}, {"title": "ε (epsilon): clip size", "terms": ["ε = 0.2", "ε"], "cs": true, "tip": "How far one update may move an action's probability: 0.2 means at most 20% up or down. This is the \"proximal\" limit."}, {"title": "Loss", "terms": ["Total loss minimised", "Total loss", "loss"], "tip": "A single number saying how wrong the networks currently are. Training means changing the weights to make it smaller.\nL = policy loss + 0.5 × value loss − 0.01 × entropy.\nThe policy part improves the actor, the value part fixes the critic at half weight, and the minus sign on entropy gently rewards exploring."}, {"title": "Policy (actor) loss", "terms": ["Policy (actor) loss", "L_policy"], "cs": true, "tip": "The part of the loss that improves the actor: make actions with positive advantage more likely and those with negative advantage less likely, but never by more than the clip allows."}, {"title": "Value (critic) loss", "terms": ["Value (critic) loss", "L_value"], "cs": true, "tip": "How wrong the critic's guesses were: the gap between what it predicted and what really happened, squared and averaged. Shrinking it makes the critic a better predictor, which makes the advantages more accurate."}, {"title": "Entropy bonus", "terms": ["Entropy bonus", "entropy bonus", "entropy of", "entropy", "ent_coef"], "tip": "Entropy measures how spread out the agent's choices are: low if it picks one action 99% of the time, high if it still tries several. A small reward for high entropy keeps the agent exploring instead of locking onto the first habit that worked."}, {"title": "H", "terms": ["H"], "cs": true, "formula": true, "tip": "The average entropy of the policy over the batch: how undecided the agent is. Higher means more exploring."}, {"title": "vf_coef", "terms": ["vf_coef"], "cs": true, "tip": "The weight of the critic's loss in the total loss: 0.5, so fixing the critic counts half as much as improving the actor."}, {"title": "Gradient", "terms": ["Gradients", "gradients", "gradient descent", "gradient"], "tip": "For every weight, the direction that would reduce the loss. Gradient descent means repeatedly taking a small step in that direction."}, {"title": "Backpropagation", "terms": ["backpropagation"], "tip": "The procedure that works out, for every weight in the network, which way to change it to reduce the loss. It works backwards from the output layer to the input layer."}, {"title": "Gradient clipping", "terms": ["clipped to a norm of", "max_grad_norm"], "tip": "If the suggested change to the weights is too large overall, it is scaled down to a maximum size of 0.5. A second safety cap, separate from PPO's clip, against one bad batch causing a wild jump."}, {"title": "Adam optimiser", "terms": ["Adam"], "cs": true, "tip": "The method that actually changes the weights. Backpropagation gives the direction; Adam decides how big a step each weight takes. It remembers recent directions (momentum) and gives each weight its own step size. It is the standard default, nothing custom."}, {"title": "Learning rate", "terms": ["learning rate 3 × 10⁻⁴", "Learning-rate schedule", "learning rate", "learning_rate"], "tip": "The overall step size for weight updates. It starts at 0.0003 and shrinks steadily to zero, so early changes are larger and late ones are fine adjustments."}, {"title": "Logits", "terms": ["logits"], "tip": "The raw scores the actor outputs, one per action, before they are turned into probabilities. They can be any number, positive or negative; a higher score means a more preferred action."}, {"title": "Softmax", "terms": ["softmax"], "tip": "The function that turns raw scores into probabilities: all positive and adding up to 100%, with higher scores getting the larger share."}, {"title": "Sampling vs most probable", "terms": ["Sampling from the policy", "sampled", "sampling", "samples"], "tip": "Picking an action at random according to the probabilities, so a 70% action is chosen about 70% of the time. Used in training so the agent tries things. At test time it simply takes the most probable valid action."}, {"title": "Multilayer perceptron (MLP)", "terms": ["multilayer perceptrons", "plain MLP", "MlpPolicy", "MLP"], "tip": "The simplest kind of neural network: a stack of layers where every output of a layer is a weighted sum of all its inputs. Soren uses 3 layers per network: 248 → 256 → 256 → output."}, {"title": "tanh", "terms": ["tanh"], "cs": true, "tip": "A function applied after each hidden layer that squashes every number into the range −1 to 1. Without it, three stacked layers would behave like one weighted sum and could not learn combinations of features."}, {"title": "Linear layer", "terms": ["Linear 248 → 256", "Linear 256 → 256", "Linear 256 → 8", "Linear 256 → 1", "hidden layer", "no shared layers"], "tip": "One layer of the network: every output number is a weighted sum of all input numbers. \"248 → 256\" means 248 numbers in, 256 out. The weights are what training adjusts. \"No shared layers\" means actor and critic are fully separate networks."}, {"title": "Parameters (weights)", "terms": ["261,385", "Parameters", "weights"], "tip": "The adjustable numbers inside the networks; learning means changing them. Soren has 261,385 in total, which is tiny (a modern language model has billions)."}, {"title": "Graph neural network (GNN)", "terms": ["graph neural networks", "graph neural network", "GNN", "graph encoder"], "tip": "A network designed to read a whole graph at once. Soren does not use one: its agent sees only a fixed-length summary of the local neighbourhood, so a plain network is enough. Listed as future work."}, {"title": "Policy-gradient", "terms": ["policy-gradient"], "tip": "A family of methods that learn the policy directly: try actions, then shift probabilities towards the ones that turned out well."}, {"title": "Actor-critic", "terms": ["actor-critic"], "tip": "A method with two parts: an actor that chooses actions and a critic that estimates how good the situation is. The critic's estimate makes the actor's learning signal much less noisy."}, {"title": "Model-free", "terms": ["model-free", "Model of the environment"], "tip": "The agent does not plan by imagining future steps. It learns by trying things and seeing the rewards, then acts directly from what it has learned."}, {"title": "On-policy", "terms": ["On-policy / off-policy", "On-policy", "on-policy"], "tip": "The agent learns only from experience collected by its current policy. Once a batch has been used for its update, it is thrown away and fresh experience is collected."}, {"title": "Exploration", "terms": ["Exploration", "exploring"], "tip": "Trying actions that do not currently look best, in case they turn out better. Without it the agent would lock onto its first working habit."}, {"title": "Deep RL", "terms": ["Deep RL", "deep RL"], "tip": "Reinforcement learning where the policy and value function are neural networks rather than lookup tables."}, {"title": "Transition", "terms": ["8,192 transitions", "Transitions per rollout", "(s, a, r, s′)", "transitions", "transition"], "tip": "One recorded step: the situation (s), the action taken (a), the reward received (r) and the new situation (s′). 16 environments × 512 steps = 8,192 of them per round."}, {"title": "Rollout", "terms": ["Rollout", "rollouts", "rollout", "collect experience", "batch of experience"], "tip": "One round of data collection: the current policy plays 512 steps in each of 16 environments, giving 8,192 transitions. Then the networks are updated and a new rollout starts."}, {"title": "Epochs and minibatches", "terms": ["10 epochs over the rollout", "Passes over each rollout", "10 passes over each rollout", "Minibatch size", "minibatches of 512", "n_epochs", "batch_size"], "tip": "The 8,192 transitions of a rollout are split into 16 minibatches of 512, and each minibatch produces one weight update. The whole set is gone through 10 times (10 epochs). 16 × 10 = 160 updates per rollout."}, {"title": "Gradient step", "terms": ["160 gradient steps", "Gradient steps per rollout", "Total gradient steps", "gradient step"], "tip": "One actual update of the weights, computed from one minibatch of 512 transitions. 160 per rollout, about 19,700 in a full training run."}, {"title": "Timesteps", "terms": ["Total timesteps", "timesteps", "n_steps"], "tip": "A count of single actions taken across all environments. 1,000,000 timesteps means the agent took about a million actions during training."}, {"title": "Checkpoint", "terms": ["best_model.npz", "checkpoint", "Choosing the checkpoint"], "tip": "A saved copy of the networks' weights. Every 50,000 timesteps the agent is tested on the validation functions, and the best-scoring copy is kept, not simply the last one."}, {"title": "Train / validation / test", "terms": ["1,023 / 128 / 127", "validation functions", "Validation evaluations", "validation", "test set", "held-out test functions", "Training functions"], "tip": "Three separate sets of functions. Training (1,023): what the agent learns from. Validation (128): used during training to pick the best checkpoint. Test (127): never touched until the very end, so its score is an honest measure on unseen code."}, {"title": "Seeds", "terms": ["5 independent runs", "5 seeds", "Seeds", "seed"], "tip": "The starting number for the random generator. Training involves randomness, so it is repeated 5 times with different seeds and the results are averaged. That shows the result is not a lucky one-off."}, {"title": "Reward normalisation", "terms": ["normalised reward units", "normalised by a running", "RewardNormalizer", "Reward normalisation"], "tip": "During training, rewards are divided by the running standard deviation of the discounted return, so learning is steadier. They are only scaled, never shifted, so the best policy is unchanged. A side effect: the critic's value estimates are in these rescaled units."}, {"title": "Baselines", "terms": ["Baselines", "baselines", "non-learning methods", "Non-learning search methods"], "tip": "Simple fixed-rule methods the agent is compared against. They do not learn: no rewards, no networks. If a learned agent cannot beat them, the learning is not adding much."}, {"title": "Depth-first search (DFS)", "terms": ["Depth-first search (DFS)", "DFS"], "cs": true, "tip": "Keep following the first unvisited next statement as deep as it goes; when stuck, back up and try the next branch."}, {"title": "Breadth-first search (BFS)", "terms": ["Breadth-first search (BFS)", "BFS"], "cs": true, "tip": "Look at everything one step from the entry, then everything two steps away, and so on outward."}, {"title": "Heuristic-first", "terms": ["Heuristic-first", "heuristic-first"], "tip": "Always go next to the reachable statement that looks most suspicious according to a hand-written score. A strong baseline because it uses the same flags the agent sees."}, {"title": "Suspicion score", "terms": ["suspicion score", "Suspicion score", "suspicion\n  score"], "tip": "A hand-written number for how risky a statement looks: dangerous call 3, array subscript 2, pointer arithmetic 2, pointer dereference 1, allocation 1, length-like variable 1, arithmetic 0.5, added up and scaled to 0–1. No learning involved."}, {"title": "Protocol A: oracle stop", "terms": ["Protocol A (oracle stop).", "Protocol A", "oracle stop", "Oracle stop", "stopped\nwhen they reach the answer"], "tip": "The baseline is stopped automatically the moment it steps on a vulnerable statement, so it effectively knows the answer and cannot be wrong. It only measures how many statements it looked at. Unfair to compare with the agent, which must decide for itself."}, {"title": "Protocol B: must declare", "terms": ["Protocol B (must declare).", "Protocol B", "must declare", "same rule", "stop at first suspicious statement", "Threshold stop"], "tip": "The baseline is not told the answer. It walks in its usual order and declares at the first statement whose suspicion score reaches a threshold, so it can be wrong, just like the agent. This is the fair comparison."}, {"title": "Threshold", "terms": ["threshold"], "tip": "The cut-off suspicion score at which a baseline declares. It was tuned on the validation functions, never on the test set."}, {"title": "Classifier (supervised reference)", "terms": ["Node classifier", "small classifier", "classifier", "supervised"], "tip": "A model shown every statement of a function at once, with the correct labels during training, and asked to rank them. Not a search. It measures the most that the 30 features can reveal when nothing is hidden."}, {"title": "Top-1", "terms": ["top-1", "ranks a vulnerable one first"], "tip": "How often the single highest-ranked statement is actually vulnerable."}, {"title": "Random guess (chance)", "terms": ["Random guess", "random guess", "chance"], "tip": "The success rate from declaring a statement picked at random: 12.5% on the test functions. Anything a method scores has to be judged against this floor."}, {"title": "95% interval", "terms": ["95% interval", "confidence intervals", "Confidence intervals"], "tip": "The range the true success rate plausibly lies in, given only 127 test functions. Wide, overlapping ranges mean two methods cannot be confidently told apart."}, {"title": "Statistically significant", "terms": ["not statistically significant", "p = 0.14", "within noise"], "tip": "A gap is significant when it is too large to be explained by luck. p = 0.14 means a gap this size would appear about 14% of the time by chance alone, which is not rare enough (the usual bar is 5%). So the agent and the baselines are not reliably different."}, {"title": "Why MCTS does not fit", "terms": ["Monte Carlo Tree Search", "Planning / MCTS", "MCTS / AlphaZero", "MCTS", "tree search", "search tree"], "tip": "MCTS picks a move by imagining many futures and checking how each scores. Soren can imagine the moves (the graph is known) but not the score: on a new function nobody knows whether a declaration is right, which is the very thing being asked. In chess the rules tell you who won; here the \"who won\" is hidden."}, {"title": "AlphaZero", "terms": ["AlphaZero"], "cs": true, "tip": "Tree search combined with a learned network that guesses how promising each position is, so the search does not need the true score. A possible extension for Soren, but more to build than PPO."}, {"title": "DQN", "terms": ["DQN"], "cs": true, "tip": "An algorithm that learns a score Q for every action and always picks the highest, with no separate policy network. Not used: the standard version has no action masking, so it would need custom work."}, {"title": "A2C / A3C", "terms": ["A2C / A3C"], "cs": true, "tip": "Earlier actor-critic algorithms from the same family as PPO. They lack the clip, so they are less stable, and they use each batch only once."}, {"title": "TRPO", "terms": ["TRPO"], "cs": true, "tip": "PPO's predecessor. It enforces the same \"stay close\" idea with a strict mathematical limit and heavier computation; PPO gets similar results more simply."}, {"title": "REINFORCE", "terms": ["REINFORCE"], "cs": true, "tip": "The simplest policy-gradient algorithm: no critic, it judges actions by the whole episode's return. Simple but very noisy."}, {"title": "High variance", "terms": ["High variance"], "tip": "The learning signal jumps around a lot from one episode to the next, because lots of random things affect the final score. Noisy signals make learning slow and unstable."}, {"title": "Acting greedily", "terms": ["act greedily", "picking the largest Q"], "tip": "Always choosing the action with the highest score, with no randomness."}, {"title": "BigVul", "terms": ["BigVul dataset", "BigVul"], "cs": true, "tip": "A public dataset of real C and C++ functions from open-source projects, each linked to a known vulnerability (CVE) and the commit that fixed it."}, {"title": "CWE-119 and CWE-125", "terms": ["CWE-119/125", "CWE-119", "CWE-125"], "cs": true, "tip": "Standard vulnerability categories. CWE-119: operations outside the bounds of a memory buffer (e.g. buffer overflow). CWE-125: reading past the end of a buffer. Soren uses only these two kinds."}, {"title": "Ground truth", "terms": ["ground truth", "vulnerable nodes", "labels", "Label alignment"], "tip": "The \"correct answer\" used for scoring: the lines that the fixing commit removed or rewrote. It is a proxy, since a fix can also touch lines that were not themselves the bug."}, {"title": "Joern", "terms": ["Joern"], "cs": true, "tip": "An open-source code analysis tool. Soren uses it to parse each C/C++ function and produce its control flow graph."}, {"title": "GraphRecord", "terms": ["GraphRecord files", "GraphRecord", "Graph record format", "Shared record"], "cs": true, "tip": "The single data format everything downstream reads: one function with its nodes, edges, vulnerable nodes and source lines."}, {"title": "Split by fixing commit", "terms": ["Split by fixing commit", "Commit-level split"], "tip": "Functions fixed by the same commit always go into the same set (train, validation or test). Otherwise near-identical functions could appear in both training and test and inflate the score."}, {"title": "Synthetic graphs", "terms": ["synthetic graphs", "Synthetic graphs", "Synthetic validation"], "tip": "Artificial, generated graphs with one planted vulnerable statement. Used to check that the method works at all before trying real code, where the signal is much weaker."}, {"title": "Reward shaping", "terms": ["potential-based reward\nshaping", "potential-based shaping", "unshaped reward"], "tip": "Optional extra hints added to the reward during training to speed up learning, done in a way that does not change which behaviour is best. Off by default; \"unshaped\" is the plain reward from the table."}, {"title": "Hyperparameters", "terms": ["hyperparameter", "Hyperparameter", "hyperparameters"], "tip": "Settings chosen by people before training, not learned: learning rate, number of environments, clip size and so on. They live in configs/ppo.yaml."}, {"title": "Sweep", "terms": ["sweep", "Ablations"], "tip": "Running training several times with different settings to see whether any choice matters. Here eight settings all gave about the same result, which points to the features, not the algorithm, as the limit. An ablation removes one piece to see how much it was contributing."}, {"title": "CodeBERT embeddings", "terms": ["CodeBERT embeddings", "CodeBERT"], "cs": true, "tip": "A richer description of each statement produced by a pretrained language model for code. Adding it did not improve the classifier, which suggests the limit is looking at one statement at a time, not how it is described."}, {"title": "Leakage controls", "terms": ["shuffled labels", "permuting statement IDs", "Leakage controls"], "tip": "Checks that the agent is not getting the answer from somewhere it should not. Shuffled labels: train on wrong answers, which should give chance-level scores. Permuted IDs: renumber the statements, which should change nothing."}, {"title": "Golden tests", "terms": ["golden tests"], "tip": "Tests that compare the program's output with a hand-checked correct answer stored in the repository."}, {"title": "Overfitting (memorising)", "terms": ["overfits", "overfit", "memorised", "memorising", "memorise", "memorisation"], "tip": "Doing well on the examples seen in training but not on new ones. Here: 56% on training functions against about 20% on unseen ones. The agent has partly learned to recognise specific functions, not a general skill."}, {"title": "Explained variance", "terms": ["Explained variance of the critic", "explained variance"], "tip": "How well the critic's predictions match what actually happened. 0 means no better than guessing the average; 1 means perfect. Rising from 0 to 0.72 shows the critic is learning."}, {"title": "Approximate KL", "terms": ["Approximate KL per update", "KL"], "cs": true, "tip": "A measure of how far one update moved the policy from the previous one. Small values (below about 0.02) mean gentle, safe updates, which is what PPO aims for."}, {"title": "Clip fraction", "terms": ["Clip fraction", "clip\n  fraction"], "tip": "The share of training samples where the update tried to move an action's probability by more than the 20% limit and was cut off. A few percent is normal; a large share would mean the updates are too aggressive."}, {"title": "Policy entropy", "terms": ["Policy entropy"], "tip": "How undecided the agent is, averaged over training steps. High early on (it tries many actions), low later (it has settled on what to do). 0 would mean it always picks one action with certainty."}, {"title": "Standard error", "terms": ["standard error"], "tip": "How much a measured percentage would wobble if the experiment were repeated on a different sample of the same size. Differences smaller than about two standard errors cannot be told apart from luck."}, {"title": "Curriculum", "terms": ["graph-size curriculum", "curriculum"], "tip": "Training on easy cases first (small functions) and adding harder ones as the agent improves. Built but not used here, because training was not getting stuck on large functions."}, {"title": "Throughput", "terms": ["timesteps per second"], "tip": "How fast training runs: the number of agent actions simulated and learned from each second."}, {"title": "NumPy", "terms": ["NumPy"], "cs": true, "tip": "Python's standard library for arrays of numbers: matrix multiplication, exp, sums. It is the only numerical library Soren's learning code uses. Everything on top of it (layers, gradients, Adam, PPO) is our own code."}, {"title": "From scratch", "terms": ["from scratch", "written by hand", "our own code", "own NumPy code"], "tip": "Written in this repository instead of imported from a library. Version 2 does this for the network, backpropagation, Adam, PPO, GAE, reward normalisation, the graph algorithms and the statistical tests, so each step can be shown and explained."}, {"title": "Numerical gradient check", "terms": ["numerical gradient"], "tip": "A way to test a hand-derived gradient: nudge one weight up and down by a tiny h, and compare (L(θ + h) − L(θ − h)) / 2h with what the backward pass computed. If they agree to many decimal places, the derivation is right."}, {"title": "Orthogonal initialisation", "terms": ["orthogonal weight matrices", "Orthogonal initialisation", "orthogonal"], "tip": "The starting weights are a random rotation matrix times a gain. This keeps the size of the signal steady from layer to layer at the start of training. Gain √2 for hidden layers, 0.01 for the actor's output so all actions start about equally likely."}, {"title": "Bias correction (Adam)", "terms": ["bias correction"], "tip": "Adam's running averages m and v start at zero, so in the first steps they are too small. Dividing by (1 − β₁ᵗ) and (1 − β₂ᵗ) fixes that; after a few hundred steps the correction is close to 1 and does nothing."}, {"title": "Inverse transform sampling", "terms": ["inverse transform sampling"], "tip": "How an action is drawn from probabilities: draw a random number u between 0 and 1, then walk through the actions adding up their probabilities, and pick the first one where the running total passes u."}, {"title": "Bootstrap", "terms": ["Bootstrap 95% interval", "bootstrap"], "tip": "Estimates how much a result could change on a different test set: resample the 127 functions with replacement 10,000 times, compute the success rate each time, and take the middle 95% of those values."}, {"title": "McNemar's test", "terms": ["McNemar's test", "McNemar p", "McNemar"], "cs": true, "tip": "Compares two methods on the same functions. Only functions where exactly one method succeeds count. If the methods were equally good, each of those would be a coin flip, so p asks how surprising the actual split is."}, {"title": "Wilcoxon signed-rank test", "terms": ["Wilcoxon signed-rank test", "Wilcoxon"], "cs": true, "tip": "Compares two methods function by function on a number (here, statements inspected). Rank the differences by size, add up the ranks where one method was larger, and check whether that sum is far from what chance would give."}, {"title": "Kosaraju's algorithm", "terms": ["Kosaraju's strongly connected components", "Kosaraju's algorithm", "strongly connected components"], "tip": "Finds groups of statements that can all reach each other, which in a control flow graph means a loop. Two depth-first searches: one on the graph to get a finishing order, one on the reversed graph in that order."}, {"title": "Walkthrough", "terms": ["python -m soren.walkthrough", "walkthrough"], "tip": "A command that takes one real function and prints, in 9 parts, every calculation from the source code to the final p-value, with the actual numbers in each formula."}, {"title": "--explain", "terms": ["--explain"], "cs": true, "tip": "A flag on the training and evaluation scripts. With it, the program prints each formula it uses, then the same formula with the real numbers filled in, then the result."}]</script>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/highlight.min.js"></script>
 <script src="vendor/mermaid.min.js"></script>
