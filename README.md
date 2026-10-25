@@ -16,12 +16,14 @@ On 127 held-out BigVul functions (CWE-119 and CWE-125), with one declaration per
 | Method | Functions localized |
 |---|---|
 | DFS or line order, stopping at the first suspicious statement | 27.6% |
-| **PPO agent** | **21.1%** |
+| **PPO agent** (implemented in this repository) | **21.6%** |
 | Random guess | 12.5% |
 
 The agent learns something but does not beat simple baselines; the difference between them is
-not statistically significant on this sample. A classifier that sees every statement at once
-reaches about 23% at top-1, with or without CodeBERT embeddings, so the limit is what
+not statistically significant on this sample. With sb3-contrib's `MaskablePPO`, before PPO was
+reimplemented here, the agent scored 21.1%
+([`experiments/test-v2`](experiments/test-v2/)). A classifier that sees every statement at
+once reaches about 23% at top-1, with or without CodeBERT embeddings, so the limit is what
 per-statement features can say, not the search policy. On synthetic graphs with a clean
 signal the same agent localizes 98% while inspecting fewer nodes than DFS. The report has the
 details and the caveats.

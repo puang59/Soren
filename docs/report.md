@@ -7,7 +7,7 @@ Karan Kumar (23BPS1034), Aryan Kumar (23BPS1193)
 Soren treats vulnerability localization as a navigation problem. Given a C or C++ function
 known to be vulnerable, an agent walks the function's control flow graph one statement at a
 time and declares the statement it believes is the flaw. We built the full pipeline: BigVul
-functions to line-level control flow graphs with Joern, a masked-action Gymnasium environment,
+functions to line-level control flow graphs with Joern, a masked-action environment,
 a PPO agent, traversal baselines under two evaluation protocols, and a visualizer that replays
 the agent's path.
 
@@ -80,9 +80,12 @@ correct declaration, −0.5 for a wrong one, and −0.5 for exhausting the step 
 
 **Termination.** A declaration ends the episode (or the last one, when several are allowed).
 
-**Learning algorithm.** Proximal Policy Optimization with action masking (`MaskablePPO`): an
-actor and a critic, each a 256×256 tanh MLP, trained with Adam at 3e-4 decaying linearly, 16
-parallel environments, 512 steps per rollout, GAE with γ = 0.99 and λ = 0.95.
+**Learning algorithm.** Proximal Policy Optimization with action masking: an actor and a
+critic, each a 256×256 tanh MLP, trained with Adam at 3e-4 decaying linearly, 16 parallel
+environments, 512 steps per rollout, GAE with γ = 0.99 and λ = 0.95. The results in Section 6
+were produced with sb3-contrib's `MaskablePPO`. The repository now implements PPO, the
+network, backpropagation and Adam itself (`soren/agents`, `soren/nn`); Appendix A shows that
+the reimplementation reproduces those results.
 
 ## 4. Dataset and preprocessing
 
@@ -288,3 +291,30 @@ navigation agent would need in order to do better.
 See the repository README for the commands. Every number in this report comes from a file
 under `experiments/`; the test-set numbers were produced once, from the commit tagged
 `v0.1-frozen`.
+
+## Appendix A. The from-scratch implementation
+
+After the evaluation above, every library that does learning or statistics was replaced with
+code in the repository, on top of NumPy: the neural network with hand-written
+backpropagation, Adam, gradient clipping, the masked categorical distribution, PPO's clipped
+loss and its gradient, GAE, reward normalisation, the environment interface, Kosaraju's
+algorithm for loops, and the bootstrap, McNemar and Wilcoxon tests. Numerical gradient checks
+cover every layer and the full PPO loss; the statistical tests agree with SciPy to 10⁻⁶.
+
+The final agent, the three- and five-declaration agents and the classifier were then retrained
+with the same configuration and seeds and evaluated on the same test split
+(`experiments/test-v2`):
+
+| | `MaskablePPO` | own PPO |
+|---|---|---|
+| test success, one declaration (5 seeds) | 0.211 ± 0.030 | 0.216 ± 0.021 |
+| 95% interval over graphs | [0.153, 0.274] | [0.157, 0.282] |
+| three declarations (3 seeds) | 0.407 | 0.388 |
+| five declarations (3 seeds) | 0.480 | 0.520 |
+| own strategy on random labels | 0.122 | 0.115 |
+| classifier top-1 (3 seeds) | 0.194 | 0.189 |
+
+The differences are within the spread between seeds, and every conclusion of Section 6 holds:
+the agent beats chance, trails the structured baselines without a significant difference
+(McNemar p = 0.18 to 0.42), and is significantly better only than the random-order baseline.
+The ablations of Section 7 were not rerun.
