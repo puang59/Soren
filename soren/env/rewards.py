@@ -50,18 +50,35 @@ class RewardConfig:
     """Discount used by the shaping term; keep it equal to the agent's discount."""
 
 
-def base_reward(event: StepEvent, cfg: RewardConfig) -> float:
-    """The unshaped reward for one step."""
-    reward = 0.0
+def reward_terms(event: StepEvent, cfg: RewardConfig) -> list[tuple[str, float]]:
+    """The parts that add up to the unshaped reward of one step, with their names.
+
+    r = correct (+1.0) or wrong (−0.5)            for a declaration
+    r = step (−0.01) [+ revisit (−0.02)]          for any other action
+      [+ timeout (−0.5)]                          if the step budget ran out
+    """
+    terms: list[tuple[str, float]] = []
     if event.action == "declare":
-        reward += cfg.correct if event.correct else cfg.wrong
+        terms.append(("correct", cfg.correct) if event.correct else ("wrong", cfg.wrong))
     else:
-        reward += cfg.step
+        terms.append(("step", cfg.step))
         if event.action == "move" and event.revisit:
-            reward += cfg.revisit
+            terms.append(("revisit", cfg.revisit))
     if event.timeout or event.dead_end:
-        reward += cfg.timeout
-    return reward
+        terms.append(("timeout" if event.timeout else "dead_end", cfg.timeout))
+    return terms
+
+
+def base_reward(event: StepEvent, cfg: RewardConfig) -> float:
+    """The unshaped reward for one step: the sum of :func:`reward_terms`."""
+    return sum(value for _, value in reward_terms(event, cfg))
+
+
+def explain_reward(event: StepEvent, cfg: RewardConfig) -> str:
+    """The reward as a sum, for example ``step(-0.01) + revisit(-0.02) = -0.030``."""
+    terms = reward_terms(event, cfg)
+    parts = " + ".join(f"{name}({value:+g})" for name, value in terms)
+    return f"{parts} = {sum(v for _, v in terms):+.3f}"
 
 
 def distance_to_vulnerable(graph: GraphRecord) -> np.ndarray:

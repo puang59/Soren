@@ -22,7 +22,6 @@ TINY = PPOConfig(
     batch_size=64,
     n_epochs=2,
     net_arch=[32, 32],
-    vec_env="dummy",
     eval_freq=256,
 )
 
@@ -36,9 +35,10 @@ def tiny_run(tmp_path_factory):
 
 def test_train_writes_run_artifacts(tiny_run):
     result, _ = tiny_run
-    for name in ("config.json", "best_model.zip", "final_model.zip", "val_history.json"):
+    for name in ("config.json", "best_model.npz", "final_model.npz", "val_history.json"):
         assert (result.run_dir / name).exists(), name
-    assert any((result.run_dir / "tb").rglob("events.out.tfevents.*"))
+    log = (result.run_dir / "train_log.csv").read_text().splitlines()
+    assert log[0].startswith("update,timesteps,") and len(log) == 1 + 512 // (2 * 64)
 
     config = json.loads((result.run_dir / "config.json").read_text())
     assert config["seed"] == 3
@@ -76,8 +76,8 @@ def test_checkpoint_round_trip_and_policy_searcher(tiny_run):
 
 def test_training_is_reproducible(tmp_path):
     graphs = generate_dataset(12, seed=1, cfg=EASY)
-    a = train(graphs[:8], graphs[8:], tmp_path / "a", TINY, seed=7, tensorboard=False)
-    b = train(graphs[:8], graphs[8:], tmp_path / "b", TINY, seed=7, tensorboard=False)
+    a = train(graphs[:8], graphs[8:], tmp_path / "a", TINY, seed=7)
+    b = train(graphs[:8], graphs[8:], tmp_path / "b", TINY, seed=7)
     assert a.history == b.history
     orders_a = [r.visit_order for r in evaluate_policy(a.model, graphs)]
     orders_b = [r.visit_order for r in evaluate_policy(b.model, graphs)]
@@ -103,7 +103,7 @@ def test_ppo_config():
     with pytest.raises(ValueError):
         PPOConfig(activation="gelu")
     with pytest.raises(ValueError):
-        PPOConfig(vec_env="threads")
+        PPOConfig(lr_schedule="cosine")
 
 
 def test_summarize():
@@ -131,10 +131,9 @@ def test_smoke_training_beats_the_random_policy(tmp_path):
         n_steps=256,
         batch_size=256,
         net_arch=[64, 64],
-        vec_env="dummy",
         eval_freq=10_240,
     )
-    result = train(graphs, graphs, tmp_path / "smoke", cfg, seed=0, tensorboard=False)
+    result = train(graphs, graphs, tmp_path / "smoke", cfg, seed=0)
     trained = summarize(evaluate_policy(load_model(result.best_model_path), graphs))
 
     env = CFGNavEnv(graphs, EnvConfig())

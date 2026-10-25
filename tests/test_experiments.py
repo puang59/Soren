@@ -82,7 +82,7 @@ def test_run_arm_and_collect(tmp_path, capsys):
     ppo = tmp_path / "ppo.yaml"
     ppo.write_text(
         "total_timesteps: 256\nn_envs: 2\nn_steps: 64\nbatch_size: 64\nn_epochs: 1\n"
-        "net_arch: [16]\nvec_env: dummy\neval_freq: 256\n"
+        "net_arch: [16]\neval_freq: 256\n"
     )
     run_arm = _load("run_arm")
     common = ["--group", "g", "--train", str(train), "--val", str(val), "--out-dir", str(tmp_path),

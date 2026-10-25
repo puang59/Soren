@@ -26,6 +26,63 @@ per-statement features can say, not the search policy. On synthetic graphs with 
 signal the same agent localizes 98% while inspecting fewer nodes than DFS. The report has the
 details and the caveats.
 
+## Built from scratch
+
+The learning code is written in this repository on top of NumPy, not imported from a
+reinforcement learning or deep learning library:
+
+| What | Where | Replaces |
+|---|---|---|
+| Neural network: layers, backpropagation, orthogonal initialisation | `soren/nn/layers.py` | PyTorch |
+| Adam optimiser and gradient clipping | `soren/nn/optim.py` | PyTorch |
+| Categorical distribution with an action mask | `soren/nn/distributions.py` | sb3-contrib |
+| Actor and critic networks | `soren/agents/policy.py` | Stable-Baselines3 |
+| PPO: clipped loss and its gradient, rollouts, update loop | `soren/agents/ppo.py` | sb3-contrib `MaskablePPO` |
+| Generalised Advantage Estimation | `soren/agents/buffer.py` | Stable-Baselines3 |
+| Parallel environments, reward normalisation | `soren/agents/vec_env.py` | `DummyVecEnv`, `VecNormalize` |
+| Environment interface and spaces | `soren/env/` | Gymnasium |
+| Graph searches: BFS depth, DFS back edges, Kosaraju components | `soren/data/graph_utils.py` | NetworkX |
+| Bootstrap intervals, McNemar (exact binomial), Wilcoxon signed-rank | `soren/eval/stats.py` | SciPy |
+
+`tests/test_nn.py` checks every hand-written gradient, including the whole PPO loss, against
+a numerical gradient, and `tests/test_stats.py` checks the statistical tests against SciPy.
+
+Three things stay external. [Joern](#joern) parses C into a code property graph, the way a
+compiler front end would; turning that into the line-level control flow graph is Soren's own
+code (`soren/data/cfg_builder.py`). pandas, PyArrow, PyYAML and matplotlib read and write
+tables, configs and figures. The optional Tier E features use a pretrained CodeBERT.
+
+## Seeing the calculations
+
+Every number the program reports can be printed together with the formula that produced it.
+
+```bash
+python -m soren.walkthrough                 # one function through the whole pipeline
+python -m soren.walkthrough --part 8        # just one part: how PPO learns from an episode
+python scripts/train.py ... --explain       # the first PPO update of a run, in full
+python scripts/final_evaluation.py --allow-test --explain   # the headline statistics
+```
+
+The walkthrough takes one test function through nine parts: the source, its control flow
+graph and the three graph searches, the 30 features of a statement and how each is computed,
+the 248-number observation, one forward pass of the network from logits to softmax
+probabilities, the whole episode with the reward of every step, the return, a PPO update on
+that episode (GAE, ratio, clipping, loss, gradient norm, an Adam step) and what it changed,
+and finally the success rate, bootstrap interval, McNemar and Wilcoxon tests of the
+evaluation. `--synthetic` runs it without the dataset or a checkpoint.
+
+During training each update prints one line (success, return, the three loss terms, KL,
+clip fraction, explained variance, learning rate), and `--explain` adds the full working:
+
+```
+── probability ratio      r = exp(log π_new(a|s) − log π_old(a|s))
+                          = exp((-2.0302) − (-1.7940))
+                          = 0.7896
+   clipped ratio          clip(r, 1 − ε, 1 + ε)
+                          = clip(0.7896, 0.80, 1.20)
+                          = 0.8000
+```
+
 ## Visualizing a traversal
 
 ### Web app
@@ -77,7 +134,7 @@ and the declaring baselines; the result appears in the Function list marked `✎
 like any other. It takes about ten seconds, most of it Joern starting.
 
 - This needs [Joern](#joern) and a trained checkpoint
-  (`runs/final/base/seed1/best_model.zip` by default, or `--checkpoint`). Without a checkpoint
+  (`runs/v2/final/base/seed1/best_model.npz` by default, or `--checkpoint`). Without a checkpoint
   only the baselines run; without Joern the page still works on the saved functions.
 - There is no ground truth for pasted code, so a declaration is shown as the method's guess,
   without a verdict, and the baselines that stop at the answer are unavailable.
@@ -201,13 +258,13 @@ try the pipeline:
 python -m soren.data.synthetic --out data/synthetic/train.jsonl --n 2000 --seed 0
 python -m soren.data.synthetic --out data/synthetic/val.jsonl --n 300 --seed 1
 python scripts/train.py --train data/synthetic/train.jsonl --val data/synthetic/val.jsonl \
-    --name synthetic-demo --timesteps 200000
-tensorboard --logdir runs/synthetic-demo/tb
+    --name synthetic-demo --timesteps 200000            # add --explain to see the math
 ```
 
-Each run writes its resolved configuration, the best and final checkpoints, the validation
-history and TensorBoard logs to `runs/<name>/`. Hyperparameters live in `configs/ppo.yaml`,
-environment and reward settings in `configs/env.yaml`.
+Each run writes its resolved configuration, the best and final checkpoints (`.npz`), the
+validation history and `train_log.csv`, with every statistic of every update, to
+`runs/v2/<name>/`. Hyperparameters live in `configs/ppo.yaml`, environment and reward settings
+in `configs/env.yaml`. A 1M-step run takes about 5 minutes on a laptop CPU.
 
 ## Evaluation
 
@@ -215,14 +272,16 @@ environment and reward settings in `configs/env.yaml`.
 # Baselines and a checkpoint through one harness; per-episode results go to Parquet.
 python scripts/evaluate.py --graphs data/synthetic/val.jsonl --split val \
     --methods dfs bfs random_walk random_order line_order \
-    --checkpoints runs/synthetic-demo/best_model.zip --out runs/synthetic-demo/eval_val.parquet
+    --checkpoints runs/v2/synthetic-demo/best_model.npz \
+    --out runs/v2/synthetic-demo/eval_val.parquet
 
 # Confidence intervals and paired tests against a reference method.
-python scripts/summarize_results.py --results runs/synthetic-demo/eval_val.parquet --reference ppo
+python scripts/summarize_results.py --results runs/v2/synthetic-demo/eval_val.parquet \
+    --reference ppo
 
 # Record step-by-step traces as JSON, one per method and graph.
 python scripts/make_traces.py --graphs data/synthetic/val.jsonl --limit 20 --methods dfs bfs \
-    --checkpoints runs/synthetic-demo/best_model.zip --out runs/synthetic-demo/traces
+    --checkpoints runs/v2/synthetic-demo/best_model.npz --out runs/v2/synthetic-demo/traces
 ```
 
 ## Reproducing the BigVul experiments
@@ -230,7 +289,7 @@ python scripts/make_traces.py --graphs data/synthetic/val.jsonl --limit 20 --met
 After the data pipeline above has produced `data/processed/graphs_{train,val,test}.jsonl`:
 
 ```bash
-# Final configuration, five seeds (about 4 minutes each on a laptop CPU).
+# Final configuration, five seeds (about 5 minutes each on a laptop CPU).
 for s in 0 1 2 3 4; do
   python scripts/run_arm.py --group final --name base --seed $s --timesteps 1000000
 done
@@ -238,10 +297,10 @@ done
 # An ablation arm is the default plus overrides; collect a group into a table.
 python scripts/run_arm.py --group ablations --name declares_3 --seed 0 --timesteps 500000 \
     --set env.max_declares=3
-python scripts/collect_runs.py --group ablations
+python scripts/collect_runs.py --runs runs/v2 --group ablations
 
 # Reference classifier, and Protocol B thresholds tuned on validation.
-python scripts/train_classifier.py --seed 0 --out runs/classifier/tier_L_seed0.pt
+python scripts/train_classifier.py --seed 0 --out runs/v2/classifier/tier_L_seed0.npz
 python scripts/tune_thresholds.py --graphs data/processed/graphs_val.jsonl --write-config
 
 # The test-set evaluation. Run it once, after everything else is frozen.
@@ -264,10 +323,12 @@ To try the pipeline without BigVul or Joern, use the synthetic graphs in the Tra
 |---|---|
 | `soren/data` | Graph schema, dataset loading, CFG construction, features |
 | `soren/env` | The CFG navigation environment, rewards and wrappers |
-| `soren/agents` | PPO and DQN agents |
+| `soren/nn` | Neural network, Adam and the masked categorical distribution, in NumPy |
+| `soren/agents` | PPO: policy, rollouts, GAE, training loop and callbacks |
 | `soren/baselines` | Traversal baselines and reference models |
 | `soren/eval` | Evaluation harness, metrics and statistics |
 | `soren/viz` | Trace format and replay helpers |
+| `soren/walkthrough.py`, `soren/mathlog.py` | Printing the calculations |
 | `web-app` | Static web visualizer |
 | `scripts` | Data pipeline, training and evaluation entry points |
 | `configs` | YAML configuration |

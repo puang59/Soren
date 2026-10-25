@@ -12,9 +12,6 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      # CPU-only torch wheels keep the install small and fast.
-      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -4,7 +4,7 @@
 Example:
     python scripts/evaluate.py --graphs data/synthetic/val.jsonl --split val \\
         --methods dfs bfs random_walk random_order line_order \\
-        --checkpoints runs/synthetic-demo/best_model.zip \\
+        --checkpoints runs/synthetic-demo/best_model.npz \\
         --out runs/synthetic-demo/eval_val.parquet
 
 Writes one row per (method, seed, graph) to the output file and prints the metrics table.
@@ -30,7 +30,7 @@ from soren.eval.runner import run_evaluation, save_results
 
 
 def checkpoint_seed(path: str, fallback: int) -> int:
-    """Read the training seed from a path such as ``runs/x/seed3/best_model.zip``."""
+    """Read the training seed from a path such as ``runs/x/seed3/best_model.npz``."""
     match = re.search(r"seed[_-]?(\d+)", path)
     return int(match.group(1)) if match else fallback
 

@@ -334,3 +334,71 @@ def feature_dim(tier: str) -> int:
 def featurize(graph: GraphRecord, tier: str = "L", lexicon: Lexicon | None = None) -> np.ndarray:
     """Return the ``[num_nodes, feature_dim(tier)]`` feature matrix for ``graph``."""
     return _lookup(tier)[1](graph, lexicon or DEFAULT_LEXICON)
+
+
+# ------------------------------------------------------------------------ explanation
+
+
+def explain_node(
+    graph: GraphRecord, node_id: int, lexicon: Lexicon = DEFAULT_LEXICON
+) -> list[tuple[str, str, float]]:
+    """How each Tier L feature of one node is computed: ``(name, working, value)`` rows.
+
+    The values are the ones :func:`featurize` returns; the working shows the inputs that
+    produced them.
+    """
+    node = graph.nodes[node_id]
+    row = featurize(graph, "L", lexicon)[node_id]
+    max_depth = max(1, max(n.depth for n in graph.nodes))
+    num_lines = max(1, len(graph.source_lines), max(n.line for n in graph.nodes))
+    loop_headers = {target for _, target in graph.back_edges}
+    n_in, n_out = len(graph.predecessors(node_id)), len(graph.successors(node_id))
+    workings = {
+        f"kind_{node.kind.lower()}": f"one-hot of the node kind, {node.kind}",
+        "in_degree": f"min(predecessors = {n_in}, {DEGREE_CLIP}) / {DEGREE_CLIP}",
+        "out_degree": f"min(successors = {n_out}, {DEGREE_CLIP}) / {DEGREE_CLIP}",
+        "depth": f"BFS depth / deepest = {max(node.depth, 0)} / {max_depth}",
+        "in_loop": "1 if the node lies on a cycle (Kosaraju components)",
+        "loop_header": "1 if a back edge points at the node"
+        + (" ✓" if node_id in loop_headers else ""),
+        "rel_line": f"line / lines in function = {max(node.line, 0)} / {num_lines}",
+    }
+
+    ops = set(node.ops)
+    calls = [call for call in node.calls if not call.startswith(_OP)]
+    sources = {
+        "array_subscript": (_OPS_SUBSCRIPT, _RE_SUBSCRIPT),
+        "pointer_deref": (_OPS_DEREF, _RE_DEREF),
+        "arith_op": (_OPS_ARITH, _RE_ARITH),
+        "comparison": (_OPS_COMPARE, _RE_COMPARE),
+        "uses_sizeof": (_OPS_SIZEOF, _RE_SIZEOF),
+        "has_cast": (_OPS_CAST, _RE_CAST),
+    }
+    for name, (op_names, pattern) in sources.items():
+        if ops:
+            hit = sorted(op.removeprefix(_OP) for op in ops & op_names)
+            workings[name] = "Joern operators: " + (", ".join(hit) if hit else "none of them")
+        else:
+            match = pattern.search(node.code)
+            workings[name] = f"text matches {match.group(0)!r}" if match else "no text match"
+    pointer = _RE_POINTER_ARITH.search(node.code)
+    workings["pointer_arith"] = f"text matches {pointer.group(0)!r}" if pointer else "no text match"
+    for name, list_name in (
+        ("dangerous_call", "dangerous_calls"),
+        ("alloc_call", "alloc_calls"),
+        ("free_call", "free_calls"),
+    ):
+        hit = sorted(set(calls) & set(getattr(lexicon, list_name)))
+        workings[name] = f"calls in the {list_name} list: " + (", ".join(hit) or "none")
+    workings["has_call"] = "calls: " + (", ".join(calls) or "none")
+    lengthy = [i for i in _RE_IDENT.findall(node.code) if _is_length_like(i)]
+    workings["length_like_ident"] = "length-like names: " + (", ".join(lengthy) or "none")
+    tokens = len(_RE_TOKEN.findall(node.code))
+    workings["token_count"] = f"min(tokens = {tokens}, {TOKEN_CLIP}) / {TOKEN_CLIP}"
+
+    out = []
+    for column, name in enumerate(TIER_L_NAMES):
+        if name.startswith("kind_") and name not in workings:
+            continue  # the inactive kinds, all 0
+        out.append((name, workings.get(name, ""), float(row[column])))
+    return out

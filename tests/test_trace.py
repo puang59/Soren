@@ -133,7 +133,6 @@ def run(tmp_path_factory):
         batch_size=64,
         n_epochs=1,
         net_arch=[16],
-        vec_env="dummy",
         eval_freq=256,
     )
     return train(GRAPHS[:12], GRAPHS[12:16], tmp_path_factory.mktemp("runs") / "t", cfg, seed=0)

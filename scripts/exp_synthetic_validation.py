@@ -83,7 +83,7 @@ def run_baselines(graphs, env_cfg, reward_cfg, seed) -> dict[str, dict[str, floa
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", default="runs/exp_synthetic")
+    parser.add_argument("--out", default="runs/v2/exp_synthetic")
     parser.add_argument("--timesteps", type=int, default=500_000)
     parser.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=CONDITIONS)
     parser.add_argument("--seeds", type=int, nargs="+", default=[0])

@@ -2,7 +2,7 @@
 """Train the supervised node classifier and report its top-k accuracy.
 
 Example:
-    python scripts/train_classifier.py --out runs/classifier/model.pt
+    python scripts/train_classifier.py --out runs/v2/classifier/model.npz
 
 The classifier ranks every statement of a function by predicted probability of being
 vulnerable. It is a reference for how much the features can say, not a traversal method.
@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--train", default="data/processed/graphs_train.jsonl")
     parser.add_argument("--val", default="data/processed/graphs_val.jsonl")
-    parser.add_argument("--out", default="runs/classifier/model.pt")
+    parser.add_argument("--out", default="runs/v2/classifier/model.npz")
     parser.add_argument("--tier", default="L", choices=["S", "L", "E"])
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--hidden", type=int, default=64)

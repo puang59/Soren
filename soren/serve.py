@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--checkpoint", default="runs/final/base/seed1/best_model.zip")
+    parser.add_argument("--checkpoint", default="runs/v2/final/base/seed1/best_model.npz")
     parser.add_argument("--env-config", default="configs/env.yaml")
     parser.add_argument("--eval-config", default="configs/eval.yaml", help="Protocol B thresholds")
     parser.add_argument("--joern-home", help="directory holding joern and joern-parse")

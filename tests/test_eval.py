@@ -219,11 +219,10 @@ def checkpoint(tmp_path_factory):
         batch_size=64,
         n_epochs=1,
         net_arch=[16],
-        vec_env="dummy",
         eval_freq=256,
     )
     run_dir = tmp_path_factory.mktemp("runs") / "seed3"
-    return train(GRAPHS[:10], GRAPHS[10:14], run_dir, cfg, seed=3, tensorboard=False)
+    return train(GRAPHS[:10], GRAPHS[10:14], run_dir, cfg, seed=3)
 
 
 def test_policy_and_baselines_share_one_harness(checkpoint):

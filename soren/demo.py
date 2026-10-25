@@ -27,7 +27,7 @@ from soren.viz.render import action_labels, replay_state
 from soren.viz.trace import Trace
 
 DEFAULT_GRAPHS = "data/processed/graphs_test.jsonl"
-DEFAULT_CHECKPOINT = "runs/final/base/seed1/best_model.zip"
+DEFAULT_CHECKPOINT = "runs/v2/final/base/seed1/best_model.npz"
 WIDTH = 78
 
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"

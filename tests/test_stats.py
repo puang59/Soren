@@ -185,3 +185,42 @@ def test_summarize_results_script(tmp_path, capsys):
     assert "p-values vs dfs" in printed and "spread across seeds" in printed
     written = pd.read_csv(out)
     assert written["method"].tolist() == ["dfs", "random_walk"]
+
+
+# --------------------------------------------- the hand-written tests against SciPy
+
+
+def test_rank_with_ties():
+    from soren.eval.stats import rank_with_ties
+
+    ranks = rank_with_ties(np.array([10.0, 30.0, 20.0, 20.0, 5.0]))
+    np.testing.assert_allclose(ranks, [2.0, 5.0, 3.5, 3.5, 1.0])
+
+
+def test_binomial_test_against_scipy():
+    scipy_stats = pytest.importorskip("scipy.stats")
+    from soren.eval.stats import binomial_test
+
+    for n in (1, 5, 12, 40):
+        for k in range(n + 1):
+            for p in (0.5, 0.3):
+                expected = scipy_stats.binomtest(k, n, p).pvalue
+                assert binomial_test(k, n, p) == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize("case", ["exact", "large", "ties_and_zeros"])
+def test_wilcoxon_against_scipy(case):
+    scipy_stats = pytest.importorskip("scipy.stats")
+    from soren.eval.stats import wilcoxon_signed_rank
+
+    rng = np.random.default_rng(1)
+    if case == "exact":  # up to 50 untied pairs: exact distribution
+        d = rng.permutation(np.arange(1, 21)) * rng.choice([-1, 1], 20) + 0.3
+    elif case == "large":  # more than 50 pairs: normal approximation
+        d = rng.normal(0.4, 1.0, size=127)
+    else:  # many ties and zeros, as in nodes-inspected differences
+        d = rng.integers(-5, 8, size=127).astype(float)
+    statistic, p_value = wilcoxon_signed_rank(d)
+    expected = scipy_stats.wilcoxon(d, zero_method="wilcox")
+    assert statistic == pytest.approx(expected.statistic)
+    assert p_value == pytest.approx(expected.pvalue, rel=1e-6)

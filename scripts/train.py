@@ -6,6 +6,11 @@ Example:
     python -m soren.data.synthetic --out data/synthetic/val.jsonl --n 200 --seed 1
     python scripts/train.py --train data/synthetic/train.jsonl --val data/synthetic/val.jsonl \\
         --name synthetic-demo --timesteps 300000
+
+Every update prints one line (success rate, losses, entropy, KL, explained variance, learning
+rate). ``--explain`` also prints the full calculation of an update: how one action was sampled,
+the reward normalisation, GAE, the PPO loss on one sample, gradient clipping and an Adam step.
+``--explain-every N`` repeats it every N updates (default: only the first).
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from soren.data.schema import read_jsonl
 from soren.env.cfg_nav_env import EnvConfig
 from soren.env.curriculum import CurriculumConfig
 from soren.env.rewards import RewardConfig
+from soren.mathlog import log
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -31,11 +37,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--name", required=True, help="run name; output goes to <out-dir>/<name>")
     parser.add_argument("--config", default="configs/ppo.yaml", help="PPO hyperparameters")
     parser.add_argument("--env-config", default="configs/env.yaml", help="env and reward settings")
-    parser.add_argument("--out-dir", default="runs")
+    parser.add_argument("--out-dir", default="runs/v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--timesteps", type=int, help="override total_timesteps")
     parser.add_argument("--n-envs", type=int, help="override n_envs")
-    parser.add_argument("--vec-env", choices=["subproc", "dummy"], help="override vec_env")
+    parser.add_argument(
+        "--explain", action="store_true", help="print the calculations of an update in full"
+    )
+    parser.add_argument(
+        "--explain-every", type=int, default=0, help="with --explain, repeat every N updates"
+    )
     parser.add_argument(
         "--curriculum",
         action="store_true",
@@ -47,7 +58,6 @@ def main(argv: list[str] | None = None) -> None:
     overrides = {
         "total_timesteps": args.timesteps,
         "n_envs": args.n_envs,
-        "vec_env": args.vec_env,
     }
     ppo_config = replace(ppo_config, **{k: v for k, v in overrides.items() if v is not None})
     env_config = load_config(EnvConfig, args.env_config, section="env")
@@ -63,6 +73,9 @@ def main(argv: list[str] | None = None) -> None:
         f"training on {len(train_graphs)} graphs, validating on {len(val_graphs)}; run: {run_dir}"
     )
 
+    if args.explain:
+        log.enabled = True
+    every = args.explain_every or (10**9 if args.explain else 0)
     result = train(
         train_graphs,
         val_graphs,
@@ -72,6 +85,8 @@ def main(argv: list[str] | None = None) -> None:
         reward_config,
         seed=args.seed,
         curriculum=curriculum,
+        verbose=True,
+        explain_every=every,
     )
     print("best validation metrics:")
     print(json.dumps(result.best_metrics, indent=2))

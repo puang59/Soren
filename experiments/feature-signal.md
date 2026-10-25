@@ -11,7 +11,7 @@ every node of a function at once gives an upper reference for what the features 
 ## Setup
 
 ```bash
-python scripts/train_classifier.py --out runs/classifier/model.pt
+python scripts/train_classifier.py --out runs/classifier/model.npz
 ```
 
 A two-layer MLP (64 units) on the 30 Tier L features of each statement, trained on the 1,023

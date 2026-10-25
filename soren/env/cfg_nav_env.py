@@ -11,7 +11,12 @@ Actions (``Discrete(K + 2)``):
 * ``K + 1``     ``DECLARE``: declare the current node vulnerable
 
 The number of successors varies per node, so :meth:`CFGNavEnv.action_masks` reports which
-actions are valid. It is the hook ``sb3_contrib.MaskablePPO`` looks for.
+actions are valid; the policy gives the others probability zero.
+
+The interface is the usual one for reinforcement learning environments: ``reset()`` returns
+the first observation, and ``step(action)`` returns ``(observation, reward, terminated,
+truncated, info)``. ``terminated`` means the episode really ended (a declaration, a dead end);
+``truncated`` means it ran out of steps.
 """
 
 from __future__ import annotations
@@ -21,12 +26,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import gymnasium as gym
 import numpy as np
-from gymnasium import spaces
 
 from soren.data.features import feature_dim, feature_names, featurize
 from soren.data.schema import NODE_KINDS, GraphRecord
+from soren.env import spaces
 from soren.env.rewards import RewardConfig, RewardModel, StepEvent
 
 VISIT_CLIP = 4
@@ -74,9 +78,7 @@ class EnvConfig:
 Sampler = Callable[[np.random.Generator], int]
 
 
-class CFGNavEnv(gym.Env):
-    metadata = {"render_modes": []}
-
+class CFGNavEnv:
     def __init__(
         self,
         graphs: Sequence[GraphRecord],
@@ -84,7 +86,6 @@ class CFGNavEnv(gym.Env):
         reward: RewardConfig | None = None,
         sampler: Sampler | None = None,
     ) -> None:
-        super().__init__()
         if not graphs:
             raise ValueError("CFGNavEnv needs at least one graph")
         self.graphs = list(graphs)
@@ -112,6 +113,9 @@ class CFGNavEnv(gym.Env):
 
         self.action_space = spaces.Discrete(k + 2)
         self.observation_space = spaces.Box(0.0, 1.0, shape=(obs_dim,), dtype=np.float32)
+        self.np_random = np.random.default_rng()
+        self.last_event: StepEvent | None = None
+        """What happened in the last step: the input of the reward function."""
 
         self._graph_index = 0
         self._started = False
@@ -181,9 +185,11 @@ class CFGNavEnv(gym.Env):
         """Start an episode.
 
         ``options`` may pin the graph with ``graph_index`` or ``graph_id`` (a ``sample_id``),
-        and may override the step budget with ``max_steps``.
+        and may override the step budget with ``max_steps``. A ``seed`` restarts the random
+        number generator that picks graphs.
         """
-        super().reset(seed=seed)
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
         options = options or {}
         if "graph_index" in options:
             index = int(options["graph_index"])
@@ -254,6 +260,7 @@ class CFGNavEnv(gym.Env):
         if self._done and hasattr(self.sampler, "report"):
             self.sampler.report(self.is_success)
 
+        self.last_event = event
         unshaped, reward = self.reward_model(event)
         self._last_reward = unshaped
         self.episode_return += unshaped

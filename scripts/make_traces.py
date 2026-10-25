@@ -3,7 +3,7 @@
 
 Example:
     python scripts/make_traces.py --graphs data/synthetic/val.jsonl --limit 20 \\
-        --methods dfs bfs --checkpoints runs/synthetic-demo/best_model.zip \\
+        --methods dfs bfs --checkpoints runs/synthetic-demo/best_model.npz \\
         --out runs/synthetic-demo/traces
 
 Writes ``<out>/<method>/<graph_id>.json``, one trace per method and graph.

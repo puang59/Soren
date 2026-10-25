@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import gymnasium as gym
 import numpy as np
 
 from soren.env.cfg_nav_env import CFGNavEnv
@@ -14,7 +13,7 @@ from soren.viz.trace import Trace, TraceStep
 __all__ = ["CurriculumConfig", "CurriculumSampler", "TraceRecorder"]
 
 
-class TraceRecorder(gym.Wrapper):
+class TraceRecorder:
     """Record each episode as a :class:`~soren.viz.trace.Trace` without altering it.
 
     Call :meth:`annotate` before a step to attach the policy's action probabilities and value
@@ -22,14 +21,19 @@ class TraceRecorder(gym.Wrapper):
     """
 
     def __init__(self, env: CFGNavEnv, method: str = "") -> None:
-        super().__init__(env)
+        self.env = env
         self.method = method
         self.trace: Trace | None = None
         self._pending: tuple[list[float] | None, float | None] = (None, None)
 
     @property
     def core(self) -> CFGNavEnv:
-        return self.env.unwrapped  # type: ignore[return-value]
+        return self.env
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "env":
+            raise AttributeError(name)
+        return getattr(self.env, name)
 
     def action_masks(self) -> np.ndarray:
         return self.core.action_masks()

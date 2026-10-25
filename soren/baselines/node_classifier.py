@@ -4,20 +4,25 @@ It answers "what if you just classify every node?". A small MLP on the per-node 
 predicts whether a statement is vulnerable; at test time all statements of a function are
 ranked by that probability. It sees the whole function at once, so it measures how much the
 features can say about which statement is vulnerable. It is not a traversal method.
+
+The network, its loss and its training loop are written with ``soren.nn``. The loss is binary
+cross-entropy on the logit ``x`` with label ``y``, weighting the rare positives by ``w``:
+
+    ℓ = −[ w·y·log σ(x) + (1 − y)·log(1 − σ(x)) ]        σ(x) = 1 / (1 + e⁻ˣ)
+    ∂ℓ/∂x = w·y·(σ(x) − 1) + (1 − y)·σ(x)
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import numpy as np
-import torch
-from torch import nn
 
 from soren.data.features import feature_dim, featurize
 from soren.data.schema import GraphRecord
+from soren.nn import MLP, Adam
 
 
 def _statements(graph: GraphRecord) -> np.ndarray:
@@ -53,6 +58,26 @@ def chance_top_k(graphs: Sequence[GraphRecord], ks: Sequence[int] = (1, 3, 5)) -
     return out
 
 
+def sigmoid(x: np.ndarray) -> np.ndarray:
+    """``1 / (1 + e⁻ˣ)``, written so that large ``|x|`` does not overflow."""
+    e = np.exp(-np.abs(x))
+    return np.where(x >= 0, 1.0 / (1.0 + e), e / (1.0 + e))
+
+
+def weighted_bce(logits: np.ndarray, labels: np.ndarray, pos_weight: float):
+    """Mean weighted binary cross-entropy and its gradient with respect to the logits.
+
+    ``log σ(x) = −softplus(−x)`` and ``log(1 − σ(x)) = −softplus(x)``, where
+    ``softplus(x) = log(1 + eˣ)``; ``np.logaddexp(0, x)`` computes it without overflow.
+    """
+    loss = pos_weight * labels * np.logaddexp(0.0, -logits) + (1 - labels) * np.logaddexp(
+        0.0, logits
+    )
+    s = sigmoid(logits)
+    grad = (pos_weight * labels * (s - 1.0) + (1 - labels) * s) / len(labels)
+    return float(loss.mean()), grad
+
+
 class NodeClassifier:
     """MLP over node features, trained with class weighting for the heavy imbalance."""
 
@@ -75,55 +100,52 @@ class NodeClassifier:
             "weight_decay": weight_decay,
             "seed": seed,
         }
-        torch.manual_seed(seed)
-        self.model = nn.Sequential(
-            nn.Linear(feature_dim(tier), hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 1),
-        )
+        rng = np.random.default_rng(seed)
+        self.model = MLP([feature_dim(tier), hidden, hidden, 1], "relu", rng)
         self.history: list[dict[str, float]] = []
         # Keyed by object identity: different datasets may reuse sample ids.
         self._cache: dict[int, tuple[GraphRecord, np.ndarray]] = {}
 
-    def _dataset(self, graphs: Sequence[GraphRecord]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _dataset(self, graphs: Sequence[GraphRecord]) -> tuple[np.ndarray, np.ndarray]:
         features, labels = [], []
         for graph in graphs:
             statements = _statements(graph)
             features.append(featurize(graph, self.config["tier"])[statements])
-            labels.append(np.isin(statements, graph.vuln_nodes).astype(np.float32))
-        return torch.from_numpy(np.concatenate(features)), torch.from_numpy(np.concatenate(labels))
+            labels.append(np.isin(statements, graph.vuln_nodes).astype(np.float64))
+        return np.concatenate(features).astype(np.float64), np.concatenate(labels)
 
     def fit(self, train: Sequence[GraphRecord], val: Sequence[GraphRecord]) -> NodeClassifier:
         """Train on ``train`` and keep the weights with the best top-1 accuracy on ``val``."""
         cfg = self.config
         x, y = self._dataset(train)
         positives = float(y.sum())
-        loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor((len(y) - positives) / positives))
-        optimiser = torch.optim.Adam(
-            self.model.parameters(), lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"]
+        pos_weight = (len(y) - positives) / positives  # balances the two classes
+        optimiser = Adam(
+            self.model.params,
+            self.model.grads,
+            lr=cfg["learning_rate"],
+            weight_decay=cfg["weight_decay"],
         )
-        generator = torch.Generator().manual_seed(cfg["seed"])
+        rng = np.random.default_rng(cfg["seed"])
         best, best_state = -1.0, None
         for epoch in range(cfg["epochs"]):
-            self.model.train()
-            order = torch.randperm(len(y), generator=generator)
+            order = rng.permutation(len(y))
             for start in range(0, len(y), 256):
                 batch = order[start : start + 256]
-                optimiser.zero_grad()
-                loss = loss_fn(self.model(x[batch]).squeeze(1), y[batch])
-                loss.backward()
+                logits = self.model.forward(x[batch])[:, 0]
+                loss, grad = weighted_bce(logits, y[batch], pos_weight)
+                self.model.backward(grad[:, None])
                 optimiser.step()
             self._cache.clear()
             metrics = self.top_k(val)
-            self.history.append({"epoch": epoch + 1, "loss": loss.item(), **metrics})
+            self.history.append({"epoch": epoch + 1, "loss": loss, **metrics})
             key = metrics["top1"] + 1e-3 * metrics["top3"]
             if key > best:
                 best = key
-                best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+                best_state = [p.copy() for p in self.model.params]
         if best_state is not None:
-            self.model.load_state_dict(best_state)
+            for p, saved in zip(self.model.params, best_state, strict=True):
+                p[...] = saved
         self._cache.clear()
         return self
 
@@ -132,10 +154,8 @@ class NodeClassifier:
         entry = self._cache.get(id(graph))
         if entry is not None:
             return entry[1]
-        self.model.eval()
-        with torch.no_grad():
-            features = torch.from_numpy(featurize(graph, self.config["tier"]))
-            scores = torch.sigmoid(self.model(features).squeeze(1)).numpy().astype(np.float64)
+        features = featurize(graph, self.config["tier"]).astype(np.float64)
+        scores = sigmoid(self.model.forward(features)[:, 0])
         scores[[graph.entry, graph.exit]] = 0.0
         self._cache[id(graph)] = (graph, scores)
         return scores
@@ -148,12 +168,15 @@ class NodeClassifier:
     def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"config": self.config, "state": self.model.state_dict()}, path)
+        arrays = {f"param_{i}": p for i, p in enumerate(self.model.params)}
+        with open(path, "wb") as fh:
+            np.savez(fh, config=np.array(json.dumps(self.config)), **arrays)
         return path
 
     @classmethod
     def load(cls, path: str | Path) -> NodeClassifier:
-        payload: dict[str, Any] = torch.load(path, weights_only=True)
-        classifier = cls(**payload["config"])
-        classifier.model.load_state_dict(payload["state"])
+        with np.load(path, allow_pickle=False) as data:
+            classifier = cls(**json.loads(str(data["config"])))
+            for i, p in enumerate(classifier.model.params):
+                p[...] = data[f"param_{i}"]
         return classifier

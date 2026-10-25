@@ -68,7 +68,7 @@ def background_payload(graph: GraphRecord, background: dict) -> dict:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--graphs", default="data/processed/graphs_test.jsonl")
-    parser.add_argument("--checkpoint", default="runs/final/base/seed1/best_model.zip")
+    parser.add_argument("--checkpoint", default="runs/v2/final/base/seed1/best_model.npz")
     parser.add_argument("--out", default="web-app/data/episodes.js")
     parser.add_argument("--max-nodes", type=int, default=32, help="skip larger functions")
     parser.add_argument("--max-lines", type=int, default=60)

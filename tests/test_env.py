@@ -2,7 +2,6 @@ import itertools
 
 import numpy as np
 import pytest
-from gymnasium.utils.env_checker import check_env
 from helpers import diamond_graph, line_graph, loop_graph, make_graph
 
 from soren.data.features import feature_dim
@@ -24,10 +23,22 @@ def start(env: CFGNavEnv, index: int = 0, **options):
     return env.reset(seed=0, options={"graph_index": index, **options})
 
 
-def test_check_env_passes():
+def test_interface_and_seeding():
     graphs = generate_dataset(20, seed=0)
-    # check_env samples actions without consulting the mask, so run it in lenient mode.
-    check_env(make_env(graphs, strict_masks=False), skip_render_check=True)
+    env = make_env(graphs, strict_masks=False)
+    obs, info = env.reset(seed=5)
+    assert env.observation_space.contains(obs) and isinstance(info, dict)
+    obs, reward, terminated, truncated, info = env.step(0)
+    assert env.observation_space.contains(obs)
+    assert isinstance(reward, float) and isinstance(terminated, bool)
+    assert isinstance(truncated, bool) and isinstance(info, dict)
+    # The same seed picks the same graphs; a masked action is a wasted step when not strict.
+    first = [env.reset(seed=11)[1]["graph_id"]] + [env.reset()[1]["graph_id"] for _ in range(5)]
+    again = [env.reset(seed=11)[1]["graph_id"]] + [env.reset()[1]["graph_id"] for _ in range(5)]
+    assert first == again
+    env.reset(seed=0, options={"graph_index": 0})
+    _, reward, _, _, info = env.step(BACKTRACK)
+    assert info["action_name"] == "BACKTRACK" and reward == RewardConfig().step
 
 
 def test_spaces():

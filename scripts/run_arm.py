@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--timesteps", type=int)
     parser.add_argument("--train", default="data/processed/graphs_train.jsonl")
     parser.add_argument("--val", default="data/processed/graphs_val.jsonl")
-    parser.add_argument("--out-dir", default="runs")
+    parser.add_argument("--out-dir", default="runs/v2")
     parser.add_argument("--config", default="configs/ppo.yaml")
     parser.add_argument("--env-config", default="configs/env.yaml")
     parser.add_argument(
@@ -90,7 +90,6 @@ def main(argv: list[str] | None = None) -> None:
         configs["reward"],
         seed=args.seed,
         curriculum=configs["curriculum"],
-        tensorboard=False,
     )
     model = load_model(result.best_model_path)
     searcher = PolicySearcher(model, configs["env"], configs["reward"], name=args.name)

@@ -3,6 +3,7 @@
 
 Example:
     python scripts/final_evaluation.py --allow-test
+    python scripts/final_evaluation.py --allow-test --runs runs/v2 --explain
 
 Run this once, after the configuration is frozen. It evaluates, on the test split:
 
@@ -12,6 +13,7 @@ Run this once, after the configuration is frozen. It evaluates, on the test spli
 * each PPO strategy on randomly reassigned labels, as its own chance reference
 
 and writes per-episode results, metric tables and confidence intervals to ``--out``.
+``--explain`` prints how the headline numbers and tests are calculated.
 """
 
 from __future__ import annotations
@@ -35,12 +37,20 @@ from soren.env.cfg_nav_env import EnvConfig
 from soren.env.rewards import RewardConfig
 from soren.eval.metrics import breakdown, compute_metrics, metrics_across_seeds
 from soren.eval.runner import TestSplitError, run_evaluation, save_results
-from soren.eval.stats import comparison_table, confidence_intervals
+from soren.eval.stats import (
+    bootstrap_ci,
+    comparison_table,
+    confidence_intervals,
+    mcnemar_success,
+    per_graph,
+    wilcoxon_nodes_inspected,
+)
+from soren.mathlog import log
 
-PPO_GROUPS = (  # method name, run directory pattern, declare budget
-    ("ppo", "runs/final/base/seed*/best_model.zip", 1),
-    ("ppo_top3", "runs/ablations/declares_3/seed*/best_model.zip", 3),
-    ("ppo_top5", "runs/ablations/declares_5/seed*/best_model.zip", 5),
+PPO_GROUPS = (  # method name, checkpoint pattern under --runs, declare budget
+    ("ppo", "final/base/seed*/best_model.npz", 1),
+    ("ppo_top3", "ablations/declares_3/seed*/best_model.npz", 3),
+    ("ppo_top5", "ablations/declares_5/seed*/best_model.npz", 5),
 )
 
 
@@ -50,7 +60,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", default="experiments/test")
     parser.add_argument("--env-config", default="configs/env.yaml")
     parser.add_argument("--eval-config", default="configs/eval.yaml")
-    parser.add_argument("--classifiers", default="runs/classifier/tier_L_seed*.pt")
+    parser.add_argument("--runs", default="runs/v2", help="directory holding the trained runs")
+    parser.add_argument("--classifiers", default="classifier/tier_L_seed*.npz", help="under --runs")
+    parser.add_argument("--explain", action="store_true", help="show how the numbers are computed")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--allow-test", action="store_true")
     args = parser.parse_args(argv)
@@ -74,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
     models: dict[str, list] = {}
     for method, pattern, budget in PPO_GROUPS:
         method_env = replace(env, max_declares=budget)
-        for seed, path in enumerate(sorted(Path().glob(pattern))):
+        for seed, path in enumerate(sorted(Path(args.runs).glob(pattern))):
             model = load_model(path)
             models.setdefault(method, []).append((model, method_env))
             seed_overrides[len(searchers)] = seed
@@ -97,7 +109,8 @@ def main(argv: list[str] | None = None) -> None:
     ranking = {"random": chance_top_k(graphs)}
     ranking["heuristic"] = top_k_accuracy([scorer.scores(g) for g in graphs], graphs)
     classifier_scores = [
-        NodeClassifier.load(path).top_k(graphs) for path in sorted(Path().glob(args.classifiers))
+        NodeClassifier.load(path).top_k(graphs)
+        for path in sorted(Path(args.runs).glob(args.classifiers))
     ]
     if classifier_scores:
         ranking["classifier"] = pd.DataFrame(classifier_scores).mean().to_dict()
@@ -129,6 +142,38 @@ def main(argv: list[str] | None = None) -> None:
     print(compute_metrics(frame)[columns].round(3).to_string(index=False))
     print(json.dumps(summary, indent=2))
     print(f"wrote {out}/")
+    if args.explain:
+        explain_headline(frame, declaring)
+
+
+def explain_headline(frame: pd.DataFrame, declaring: pd.DataFrame) -> None:
+    """Show, step by step, how the headline success rate and the tests against PPO arise."""
+    log.enabled = True
+    log.heading("How the headline numbers are calculated")
+    table = per_graph(frame)
+    ppo = table[table["method"] == "ppo"]
+    episodes = frame[frame["method"] == "ppo"]
+    log.section("success rate of the PPO agent")
+    log.text(
+        f"{len(episodes)} episodes = {ppo.shape[0]} graphs × "
+        f"{episodes['seed'].nunique()} trained seeds; one deterministic episode each"
+    )
+    log.formula(
+        "per graph",
+        "s_g = (episodes on g that end in a correct declaration) / seeds",
+        None,
+        "values in {0, 0.2, …, 1}",
+    )
+    log.formula(
+        "success rate",
+        "S = Σ_g s_g / G",
+        f"{ppo['success'].sum():.1f} / {len(ppo)}",
+        f"{ppo['success'].mean():.4f}",
+    )
+    bootstrap_ci(ppo["success"].to_numpy(), explain="PPO success rate")
+    for method in sorted(m for m in declaring["method"].unique() if m != "ppo"):
+        mcnemar_success(declaring, "ppo", method, explain=True)
+    wilcoxon_nodes_inspected(declaring, "ppo", "dfs+heuristic", explain=True)
 
 
 if __name__ == "__main__":

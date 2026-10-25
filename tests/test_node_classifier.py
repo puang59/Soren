@@ -51,7 +51,7 @@ def test_training_is_reproducible_and_round_trips(tmp_path):
     a = NodeClassifier(epochs=4, seed=3).fit(TRAIN[:50], VAL[:20])
     b = NodeClassifier(epochs=4, seed=3).fit(TRAIN[:50], VAL[:20])
     np.testing.assert_allclose(a.scores(VAL[0]), b.scores(VAL[0]))
-    loaded = NodeClassifier.load(a.save(tmp_path / "m" / "model.pt"))
+    loaded = NodeClassifier.load(a.save(tmp_path / "m" / "model.npz"))
     np.testing.assert_allclose(loaded.scores(VAL[0]), a.scores(VAL[0]))
     assert loaded.config == a.config
 
@@ -79,7 +79,7 @@ def test_script(tmp_path, capsys):
     spec = importlib.util.spec_from_file_location("tc", ROOT / "scripts" / "train_classifier.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    out = tmp_path / "clf" / "model.pt"
+    out = tmp_path / "clf" / "model.npz"
     module.main(["--train", str(train), "--val", str(val), "--out", str(out), "--epochs", "5"])
     assert out.exists() and out.with_suffix(".json").exists()
     printed = capsys.readouterr().out

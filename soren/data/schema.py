@@ -17,8 +17,6 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
 NODE_KINDS: tuple[str, ...] = (
     "ENTRY",
     "EXIT",
@@ -149,16 +147,6 @@ class GraphRecord:
                     seen.add(v)
                     queue.append(v)
         return seen
-
-    def to_networkx(self) -> nx.DiGraph:
-        graph = nx.DiGraph(sample_id=self.sample_id, entry=self.entry, exit=self.exit)
-        for node in self.nodes:
-            attrs = asdict(node)
-            attrs.pop("id")
-            graph.add_node(node.id, vulnerable=node.id in self.vuln_set, **attrs)
-        for u, v in self.edges:
-            graph.add_edge(u, v, back=self.is_back_edge(u, v))
-        return graph
 
     # ----------------------------------------------------------------- validation
 

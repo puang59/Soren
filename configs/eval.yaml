@@ -14,4 +14,4 @@ protocol_b:
     line_order: 0.65
     random_order: 0.55
     random_walk: 0.15
-  classifier_path: runs/classifier/model.pt
+  classifier_path: runs/v2/classifier/model.npz

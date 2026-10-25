@@ -7,7 +7,6 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
-import torch
 
 from soren.baselines.base import EpisodeResult
 from soren.data.schema import GraphRecord
@@ -90,14 +89,10 @@ def record_policy_trace(
         options["max_steps"] = max_steps
     obs, _ = recorder.reset(options=options)
     done = False
+    policy = getattr(model, "policy", model)  # a training PPO object or a loaded policy
     while not done:
         mask = recorder.action_masks()
-        with torch.no_grad():
-            obs_tensor, _ = model.policy.obs_to_tensor(obs)
-            distribution = model.policy.get_distribution(obs_tensor, action_masks=mask[None])
-            probs = distribution.distribution.probs[0].cpu().numpy()
-            value = float(model.policy.predict_values(obs_tensor).item())
-        recorder.annotate(probs, value)
+        recorder.annotate(policy.action_probs(obs, mask), policy.value(obs))
         action, _ = model.predict(obs, action_masks=mask, deterministic=deterministic)
         obs, _, terminated, truncated, _ = recorder.step(int(action))
         done = terminated or truncated

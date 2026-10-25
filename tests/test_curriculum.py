@@ -152,13 +152,10 @@ def test_training_with_a_curriculum(tmp_path):
         batch_size=64,
         n_epochs=1,
         net_arch=[16],
-        vec_env="dummy",
         eval_freq=512,
     )
     curriculum = CurriculumConfig(enabled=True, start_cap=15, widen_every=20)
-    result = train(
-        graphs, graphs[:4], tmp_path / "c", cfg, curriculum=curriculum, tensorboard=False
-    )
+    result = train(graphs, graphs[:4], tmp_path / "c", cfg, curriculum=curriculum)
     config = json.loads((result.run_dir / "config.json").read_text())
     assert config["curriculum"]["enabled"] is True and config["curriculum"]["start_cap"] == 15
     assert result.history

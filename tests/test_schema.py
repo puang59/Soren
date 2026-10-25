@@ -1,9 +1,15 @@
 import dataclasses
 
+import numpy as np
 import pytest
 from helpers import diamond_graph, line_graph, loop_graph, make_graph
 
-from soren.data.graph_utils import bfs_depths, find_back_edges, nodes_in_cycles
+from soren.data.graph_utils import (
+    bfs_depths,
+    find_back_edges,
+    nodes_in_cycles,
+    strongly_connected_components,
+)
 from soren.data.schema import (
     GraphRecord,
     SchemaError,
@@ -51,15 +57,6 @@ def test_predecessors_and_back_edges():
     assert record.back_edges == [(3, 1)]
     assert record.is_back_edge(3, 1)
     assert not record.is_back_edge(1, 2)
-
-
-def test_to_networkx():
-    record = diamond_graph(vuln=3)
-    graph = record.to_networkx()
-    assert graph.number_of_nodes() == 6
-    assert set(graph.edges) == set(record.edges)
-    assert graph.nodes[3]["vulnerable"] and not graph.nodes[2]["vulnerable"]
-    assert graph.nodes[1]["kind"] == "BRANCH"
 
 
 def _mutated(record: GraphRecord, **changes) -> GraphRecord:
@@ -122,3 +119,30 @@ def test_graph_utils():
     assert bfs_depths(7, edges, 0) == [0, 1, 2, 3, 2, 3, -1]
     assert find_back_edges(6, edges, 0) == [(3, 1)]
     assert nodes_in_cycles(6, edges) == {1, 2, 3}
+
+
+def _reaches(num_nodes, edges, source):
+    adjacency = {u: [] for u in range(num_nodes)}
+    for u, v in edges:
+        adjacency[u].append(v)
+    seen, todo = set(), [source]
+    while todo:
+        for v in adjacency[todo.pop()]:
+            if v not in seen:
+                seen.add(v)
+                todo.append(v)
+    return seen
+
+
+def test_strongly_connected_components_against_brute_force():
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        n = int(rng.integers(2, 15))
+        edges = sorted({(int(u), int(v)) for u, v in rng.integers(n, size=(2 * n, 2)) if u != v})
+        reach = [_reaches(n, edges, u) for u in range(n)]
+        components = strongly_connected_components(n, edges)
+        assert sorted(u for c in components for u in c) == list(range(n))
+        for component in components:
+            for u in component:  # u and v share a component iff each reaches the other
+                assert component == {u} | {v for v in reach[u] if u in reach[v]}
+        assert nodes_in_cycles(n, edges) == {u for u in range(n) if u in reach[u]}
